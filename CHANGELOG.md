@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0
+- Sound bends round corners (flag `diffraction`). Loud sounds find the edge of their shadow (door jambs, wall corners) and re-emit a dimmer cone of dots into the rooms beyond, delayed by the walk there. A sound out of sight is heard from the opening it comes round, at the length of the path it took, with less muffling than sound through a wall. Bots hear it the same way and walk to the opening instead of the true position; an estimate like that is never sharp enough for them to shoot at.
+- Gunshots are louder in front (flag `directivity`): the muzzle blast reaches about twice as far ahead of the gun as behind it, for dots, audio and bot hearing.
+- Bots see echo dots (flag `botSight`): any dot that lands on a body, from anyone's sound, is spotted by bots that face it with a clear line of sight within 30 m. With selfEcho, every gunshot now lights up the shooter for whoever is looking.
+- Bots decide by scoring: each tick, every action (knife, engage, relocate, hurt, health, sneak, hold, hunt, roam) scores itself and the best one runs, with a small bonus for keeping the current one. Personalities scale the scores (`PERS.*.w`). With the new flags off, behaviour matches 0.4.
+- New bot action **sneak**: bots track which way a contact faces (from a click or gunshot they heard directly, or from its movement), then crouch round its side to its back for a knife kill. Sneaky bots favour it; knife-hunters hold fire while sneaking up on someone facing away.
+- Shared per-sound walking-distance field (`R.world.soundField`): bots, audio and echo compute it once per sound.
+
+## 0.4.0
+- Pistol fires faster: 0.2 s between shots (was 0.26), for bots too. Flag `fireInterval` tunes it live.
+- Gunshots light the shooter. Bodies hold the pistol two-handed in front of the face, following view pitch, and lower it while sprinting. Gunshot rays and their reverb can now hit the shooter's own body, so every shot paints your hands and arms in first person. Flag `selfEcho`, default on.
+- Dots no longer stick to bodies: a dot that hits a player freezes where it landed as a ghost image. `stickyDots` now defaults to off.
+- No muzzle flash: a shot is seen only through its echoes. Flag `muzzleFlash` brings the old spark burst back.
+- The local player's own echo dots are hidden only on the head (the camera), no longer on everything above the chest.
+
 ## 0.3.0
 - Humanoid bodies (`body.js`): 13 capsules (torso, head, arms, legs, feet) with a procedural walk, sprint and crouch cycle driven by each actor's velocity. Echoes, bullets, darts and bot hearing all hit the posed body. Flag `humanoid`, default on; off restores the cylinder + head sphere.
 - Echo splats stay on the limb that was hit instead of wrapping a cylinder.

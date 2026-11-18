@@ -1,9 +1,12 @@
 // bots.js — REVERB bots (R.bots). See SPEC.md "bots.js".
-// Bots are blind. Everything they know about other actors comes from:
-//   - 'sound' events they can hear (walking distance <= radius), read ONLY at emission time (sound.x/y/z),
-//     turned into a noisy estimate. sound.actor is used only as an identity key to group sounds per contact.
-//   - their own tongue click / own dart pings: rays are cast like echo.js does and any ray that lands on an
-//     actor becomes a precise estimate at that ray's hit point (what a human would see as dots).
+// Bots have no eyes beyond what a player has. Everything they know about other actors comes from:
+//   - 'sound' events they can hear (walking distance <= radius, less behind a gun), read ONLY at emission time,
+//     turned into a noisy estimate. Out of sight, a sound is placed at the doorway or corner it came round, like
+//     a human ear does. sound.actor is used only as an identity key to group sounds per contact. A click or
+//     gunshot heard directly also tells them which way the source was facing.
+//   - echo dots that land on bodies (R.echo.actorHits), from anyone's sound, when the dot is in front of the bot
+//     and in its line of sight: the same dots a player sees. Their own clicks and dart pings are also scanned
+//     directly for an instant read.
 //   - 'shot' events that hit them: the shot origin gives a (noisy) bearing, like the player's damage arc.
 // They never read another actor's live x/z.
 (function () {
@@ -26,16 +29,19 @@
       engageRange: 20, crouchDist: 5, sprintFar: 16, relocateP: 0.3, memory: 9, holdT: 0.8,
       clickEvery: 7, dartEvery: 16, hpSeek: 30, roamCrouchP: 0.1, burst: [3, 4], crouchShoot: false,
       knifeHunt: false, reloadAt: 3, aimMult: 1.1, investRange: 26, fleeHp: 35, pingCurious: true, burstPause: [0.35, 0.7],
+      w: { sneak: 0.45, hold: 0.9, hunt: 1.1, health: 0.9 },
     },
     cautious: {
       engageRange: 16, crouchDist: 10, sprintFar: 99, relocateP: 0.8, memory: 12, holdT: 3.0,
       clickEvery: 10, dartEvery: 11, hpSeek: 60, roamCrouchP: 0.3, burst: [2, 3], crouchShoot: true,
       knifeHunt: false, reloadAt: 5, aimMult: 0.95, investRange: 12, fleeHp: 70, pingCurious: false, burstPause: [0.6, 1.1],
+      w: { sneak: 0.6, hold: 1.1, hunt: 0.95, health: 1.1 },
     },
     sneaky: {
       engageRange: 14, crouchDist: 12, sprintFar: 99, relocateP: 0.7, memory: 12, holdT: 2.0,
       clickEvery: 14, dartEvery: 9, hpSeek: 45, roamCrouchP: 0.55, burst: [2, 3], crouchShoot: true,
       knifeHunt: true, reloadAt: 4, aimMult: 1.0, investRange: 18, fleeHp: 40, pingCurious: false, burstPause: [0.5, 1.0],
+      w: { sneak: 1.15 },
     },
   };
   const PERS_ORDER = ['aggressive', 'cautious', 'sneaky', 'aggressive', 'sneaky', 'cautious'];
@@ -81,7 +87,7 @@
     resetStats() {
       this.stats = {
         shots: 0, hits: 0, heads: 0, kills: 0, knifeKills: 0, darts: 0, clicks: 0, lives: 0,
-        heardSum: 0, heardN: 0, shotSum: 0, shotN: 0,
+        heardSum: 0, heardN: 0, shotSum: 0, shotN: 0, sights: 0,
       };
     },
 
@@ -120,6 +126,7 @@
       if (!R.world || !R.world.navW) return;
       const t0 = now();
       const time = R.time || 0;
+      processSight();
       for (const b of R.actors) if (b.brain && b.alive) tickBot(b, dt, time);
       this._timeAcc += now() - t0; this._timeN++;
     },
@@ -128,7 +135,8 @@
     describe(b) {
       const br = b && b.brain;
       if (!br) return '';
-      return b.name + ' [' + br.persName + '] ' + br.state + ' contacts:' + br.contacts.size;
+      const sc = br.scores ? Object.keys(br.scores).filter((k) => br.scores[k] > 0).map((k) => k + ' ' + br.scores[k].toFixed(2)).join(', ') : '';
+      return b.name + ' [' + br.persName + '] ' + br.state + ' contacts:' + br.contacts.size + (sc ? ' (' + sc + ')' : '');
     },
   });
 
@@ -144,7 +152,7 @@
   function newBrain(persName) {
     const t = R.time || 0;
     return {
-      persName, pers: PERS[persName], state: 'roam',
+      persName, pers: PERS[persName], state: 'roam', scores: null, sneakId: -1,
       contacts: new Map(), interests: [],
       goal: null, field: null, fieldGoal: null, fieldT: -99, legMode: 'walk', pauseUntil: 0,
       engagedId: -1, lastEngageT: -99, reactAt: 0, burstLeft: 0, nextShotT: 0, aimOff: [0, 0],
@@ -167,20 +175,13 @@
       if (s.kind === 'click') echoScan(s.actor, s, true);
       else if (s.kind === 'ping') echoScan(s.actor, s, false);
     }
-    const cands = [];
     for (const b of R.actors) {
       if (!b.brain || !b.alive || b === s.actor) continue;
       const e = hyp(s.x - b.x, s.z - b.z);
-      if (e <= s.radius) cands.push(b, e);
-    }
-    if (!cands.length) return;
-    let field = null;
-    for (let i = 0; i < cands.length; i += 2) {
-      const b = cands[i], e = cands[i + 1];
-      let d;
-      if (cands.length === 2) d = R.world.hearDist(s.x, s.z, b.x, b.z, s.radius);
-      else { field = field || R.world.flowField(s.x, s.z, s.radius + 1); d = R.world.fieldAt(field, b.x, b.z); }
-      if (!(d <= s.radius)) continue;
+      const reach = s.radius * R.soundGain(s, b.x, b.z); // quieter behind a gun
+      if (e > reach) continue;
+      const d = R.world.fieldAt(R.world.soundField(s), b.x, b.z);
+      if (!(d <= reach)) continue;
       hear(b, s, d, e);
     }
   }
@@ -192,7 +193,17 @@
     const occl = d > e * 1.25 + 0.75;
     const sig = (KIND_LOC[kind] || 1) * lerp(1.35, 0.65, sk()) * T.tune.hearErr *
       (0.12 + 0.07 * d + 1.1 * (d / s.radius)) * (occl ? 1.5 : 1);
-    const ex = s.x + gauss() * sig, ez = s.z + gauss() * sig;
+    let cx = s.x, cz = s.z, sg = sig;
+    if (occl && R.flag && R.flag('diffraction')) {
+      // heard round a corner: it seems to come from the opening, a little beyond it
+      const p = R.world.portal(s, b.x, eyeY(b), b.z);
+      if (p && !p.direct) {
+        const ox = p.x - b.x, oz = p.z - b.z, ol = hyp(ox, oz) || 1, past = Math.min(2, Math.max(0, d - ol));
+        cx = p.x + (ox / ol) * past; cz = p.z + (oz / ol) * past;
+        sg = Math.max(sig, 1.25); // never sharp enough to shoot at
+      }
+    }
+    const ex = cx + gauss() * sg, ez = cz + gauss() * sg;
     if (kind === 'ping') {
       // a dart landed there: the thrower is elsewhere and is about to see that area
       br.interests.push({ x: ex, z: ez, t, kind });
@@ -215,7 +226,9 @@
     let chest = 1.15;
     if (kind === 'crouch') chest = 0.7;
     else if ((kind === 'gunshot' || kind === 'click') && s.y > 0.3) chest = R.util.clamp(s.y - 0.45, 0.55, 1.25);
-    addContact(b, s.actor.id, ex, ez, chest, sig, kind, t);
+    const c = addContact(b, s.actor.id, ex, ez, chest, sg, kind, t);
+    // a click or gunshot heard directly gives away which way they face
+    if (!occl && s.dir && (kind === 'click' || kind === 'gunshot')) { c.fyaw = yawTo(s.dir[0], s.dir[2]); c.fyawT = t; }
     if (!br.firstHeard) { br.firstHeard = true; T.stats.heardSum += t - br.lifeStart; T.stats.heardN++; }
   }
 
@@ -230,6 +243,9 @@
     } else {
       // fuse with the previous estimate (older info decays: people move ~2 m/s)
       const age = t - c.t, so = c.sig + age * 2.2;
+      // a sharp new fix well away from a recent one: they're moving that way, and probably facing it
+      const mv = hyp(x - c.x, z - c.z);
+      if (age < 2.5 && sig < 0.9 && c.sig < 0.9 && mv > 1.0 + sig + c.sig) { c.myaw = yawTo(x - c.x, z - c.z); c.myawT = t; }
       const wo = 1 / (so * so), wn = 1 / (sig * sig), ws = wo + wn;
       c.x = (c.x * wo + x * wn) / ws; c.z = (c.z * wo + z * wn) / ws;
       c.sig = Math.sqrt(1 / ws);
@@ -277,6 +293,34 @@
     }
   }
 
+  // ---- sight: the same echo dots on bodies a player would see. A dot counts once it has appeared, if it's within
+  // range, inside a ~130 degree view cone and in line of sight from the bot's eye.
+  const SIGHT_RANGE = 30, SIGHT_HALF = 65 * DEG;
+  function processSight() {
+    const E = R.echo;
+    if (!E || !E.actorHits || !R.world || !R.world.los) return;
+    const H = E.actorHits, nowE = E.time, on = !R.flag || R.flag('botSight');
+    let k = 0;
+    for (let i = 0; i < H.length; i++) {
+      const h = H[i];
+      if (h.born > nowE) { H[k++] = h; continue; }
+      if (!on || nowE - h.born > 0.6 || !h.actor || !h.actor.alive) continue;
+      for (const b of R.actors) if (b.brain && b.alive && b !== h.actor) seeDot(b, h);
+    }
+    H.length = k;
+  }
+  function seeDot(b, h) {
+    const ey = eyeY(b), dx = h.x - b.x, dz = h.z - b.z, D = hyp(dx, dz);
+    if (D > SIGHT_RANGE || D < 0.3) return;
+    if (Math.abs(R.util.angleWrap(yawTo(dx, dz) - b.yaw)) > SIGHT_HALF) return;
+    const k = 0.08 / D;
+    if (!R.world.los(b.x, ey, b.z, h.x - dx * k, h.y, h.z - dz * k, true)) return;
+    const chest = h.part === 'head' ? h.y - 0.45 : R.util.clamp(h.part === 'leg' ? h.y + 0.45 : h.y, 0.55, 1.25);
+    const sig = 0.15 + D * 0.012;
+    addContact(b, h.actor.id, h.x - h.nx * 0.25 + gauss() * sig, h.z - h.nz * 0.25 + gauss() * sig, chest, sig, 'echo', R.time || 0);
+    T.stats.sights++;
+  }
+
   function coneDir(d, half) {
     let ux = 0, uy = 1, uz = 0;
     if (Math.abs(d[1]) > 0.9) { ux = 1; uy = 0; }
@@ -312,7 +356,6 @@
     }
   }
 
-  // ======================= brain =======================
   function pickContact(b, t) {
     const br = b.brain;
     let best = null, bs = Infinity;
@@ -328,6 +371,209 @@
     return best;
   }
 
+  // ======================= brain: utility actions =======================
+  // Every tick each action scores itself from what the bot knows (0 = not possible). The bot runs the best one,
+  // with a small bonus for keeping its current action. Personalities scale the scores (pers.w), so a new behaviour
+  // is one more entry here, not another branch in a chain.
+  const KEEP_BONUS = 0.08;
+  const ACTIONS = [
+    {
+      name: 'knife',
+      score(x) {
+        const { c, age, cd, wp, br } = x;
+        if (!c || cd >= 1.4 || wp.knifeT > 0) return 0;
+        const sneaking = br.sneakId === c.id && age < 2.5 && c.sig < 1.0;
+        return (age < 0.8 && c.sig < 0.75) || sneaking ? 0.95 : 0;
+      },
+      run(x) {
+        const { b, c, cd, o } = x;
+        o.look = x.aimAt(c.x, c.chest, c.z);
+        o.goal = { x: c.x, z: c.z }; o.mode = 'walk';
+        if (Math.abs(R.util.angleWrap(o.look.yaw - b.yaw)) < 22 * DEG && cd < 1.3 && R.weapons && R.weapons.knife) R.weapons.knife(b);
+      },
+    },
+    {
+      name: 'engage',
+      score(x) {
+        const { b, br, P, c, age, cd, t, wp, reloading, ey, W } = x;
+        if (!c || cd <= 1.2) return 0;
+        const canEngage = age < 0.8 && cd < P.engageRange && c.sig < T.tune.fireConf * (P.persName === 'aggressive' ? 1.3 : 1) && t >= br.relocateMinT && wp.ammo > 0 && !reloading;
+        const continuing = c.id === br.engagedId && age < 1.3 && br.burstLeft > 0 && t - br.lastEngageT < 0.5 && wp.ammo > 0 && !reloading;
+        if (!(canEngage || continuing)) return 0;
+        if (!W.los(b.x, ey, b.z, c.x, c.chest, c.z, true)) return 0;
+        // a knife-hunter already sneaking up on someone who faces away holds fire
+        if (P.knifeHunt && br.sneakId === c.id && cd < 5 && behindness(b, c, t) > 0.3) return 0.5;
+        return 0.85;
+      },
+      run(x) {
+        const { b, br, P, c, cd, t, wp, S, o } = x;
+        if (br.engagedId !== c.id || t - br.lastEngageT > 1.5) {
+          br.engagedId = c.id;
+          br.reactAt = t + lerp(0.45, 0.18, S) * rand(0.85, 1.25) * T.tune.reactMult;
+          br.burstLeft = R.util.randInt(P.burst[0], P.burst[1]);
+          sampleAim(b, c, t, cd);
+        }
+        br.lastEngageT = t;
+        const a = x.aimAt(c.x, c.chest, c.z);
+        o.look = { yaw: a.yaw + br.aimOff[0], pitch: a.pitch + br.aimOff[1] };
+        o.stand = true; o.crouchStill = P.crouchShoot;
+        const err = Math.abs(R.util.angleWrap(o.look.yaw - b.yaw)) + Math.abs(o.look.pitch - b.pitch);
+        if (t >= br.reactAt && t >= br.nextShotT && err < 2.5 * DEG && wp.fireT <= 0) {
+          const r = R.weapons.fire(b);
+          if (r) {
+            T.stats.shots++;
+            if (!br.firstShot) { br.firstShot = true; T.stats.shotSum += t - br.lifeStart; T.stats.shotN++; }
+            br.burstLeft--;
+            br.nextShotT = t + (R.weapons ? R.weapons.C.FIRE_INTERVAL : FIRE_INTERVAL) + rand(0.03, 0.16);
+            sampleAim(b, c, t, cd);
+            if (br.burstLeft <= 0) {
+              if (Math.random() < P.relocateP) startRelocate(b, t, c);
+              else { br.burstLeft = R.util.randInt(P.burst[0], P.burst[1]); br.nextShotT = t + rand(P.burstPause[0], P.burstPause[1]); }
+            }
+          }
+        }
+      },
+    },
+    {
+      name: 'relocate', // just revealed ourselves (or fleeing): move somewhere else
+      score(x) { return x.t < x.br.relocateUntil && x.br.relocGoal ? 0.8 : 0; },
+      run(x) {
+        const { br, P, c, age, cd, o } = x;
+        o.goal = br.relocGoal; o.mode = P.persName === 'sneaky' && cd < 6 ? 'crouch' : 'walk';
+        if (c && age < 3) o.look = x.aimAt(c.x, c.chest, c.z);
+      },
+    },
+    {
+      name: 'hurt', // turn toward the damage, maybe move
+      score(x) {
+        const { br, c, age, t } = x;
+        return t - br.hurtT < 1.2 && br.hurtYaw != null && !(c && age < 0.8) ? 0.7 : 0;
+      },
+      run(x) {
+        const { b, br, P, t, dt, o } = x;
+        o.look = { yaw: br.hurtYaw, pitch: 0 };
+        if (P.persName !== 'aggressive' && t - br.hurtT < dt * 1.5) startRelocate(b, t, null);
+        o.stand = true; o.crouchStill = true;
+      },
+    },
+    {
+      name: 'health',
+      score(x) {
+        const { b, P, age } = x;
+        if (!(b.health <= P.hpSeek && age > 1.5)) return 0;
+        x.pk = healthTarget(b);
+        return x.pk ? 0.6 + 0.08 * (1 - b.health / P.hpSeek) : 0;
+      },
+      run(x) {
+        const { c, age, o } = x;
+        o.goal = x.pk; o.mode = 'walk';
+        if (c && age < 4) o.look = x.aimAt(c.x, c.chest, c.z);
+      },
+    },
+    {
+      name: 'sneak', // creep round to the back of someone whose facing we know, for a knife kill
+      score(x) {
+        const { b, c, age, cd, t, wp } = x;
+        if (!c || c.searched || age > 4 || cd > 14 || cd < 1.0 || wp.knifeT > 0.3) return 0;
+        const bh = behindness(b, c, t);
+        if (bh == null) return 0;
+        let s = 0.5 + 0.25 * Math.max(0, bh);
+        if (bh < 0 && c.armed && t - (c.shotT || -99) < 1.5) s -= 0.3; // in front of someone shooting: no
+        return s;
+      },
+      run(x) {
+        const { b, br, c, cd, t, o } = x;
+        br.sneakId = c.id;
+        const fy = facingOf(c, t), fx = -Math.sin(fy), fz = -Math.cos(fy);
+        const bh = behindness(b, c, t);
+        if (bh > 0.3) o.goal = { x: c.x - fx * 0.9, z: c.z - fz * 0.9 };
+        else {
+          // circle wide round their side, not across their front
+          const rx = Math.cos(fy), rz = -Math.sin(fy);
+          const side = Math.sign((b.x - c.x) * rx + (b.z - c.z) * rz) || 1;
+          o.goal = { x: c.x + rx * side * 3 - fx * 1.5, z: c.z + rz * side * 3 - fz * 1.5 };
+          if (!R.world.walkable(o.goal.x, o.goal.z)) o.goal = { x: c.x - fx * 1.2, z: c.z - fz * 1.2 };
+        }
+        o.mode = 'crouch';
+        if (cd < 15) o.look = x.aimAt(c.x, c.chest, c.z);
+      },
+    },
+    {
+      name: 'hold', // wait for them to make another sound
+      score(x) {
+        const { P, c, age, cd, reloading, wp } = x;
+        return c && age < 0.8 + P.holdT && cd < 14 && !c.searched && !reloading && wp.ammo > 0 && (c.armed || P.persName !== 'aggressive') ? 0.55 : 0;
+      },
+      run(x) {
+        const { b, P, c, age, cd, t, o } = x;
+        o.look = x.aimAt(c.x, c.chest, c.z);
+        o.stand = true; o.crouchStill = P.persName !== 'aggressive';
+        maybeClick(b, t, cd < 9 && age > 1.0, o.look);
+      },
+    },
+    {
+      name: 'hunt', // investigate the contact
+      score(x) {
+        const { b, br, P, c, cd, t } = x;
+        // non-aggressive bots let two other shooters finish their fight, then go for the death noise
+        return c && !c.searched && c.keen && !(P.persName !== 'aggressive' && cd > 7 && othersFighting(br, t, b)) ? 0.45 : 0;
+      },
+      run(x) {
+        const { b, br, P, c, age, cd, t, W, o } = x;
+        o.goal = { x: c.x, z: c.z };
+        o.mode = cd > P.crouchDist ? (cd > P.sprintFar ? 'sprint' : 'walk') : 'crouch';
+        if (P.knifeHunt && cd < 4 && (!c.armed || t - (c.reloadT || -99) < 1.5)) o.mode = 'crouch';
+        if (cd < 15) o.look = x.aimAt(c.x, c.chest, c.z);
+        if (cd < 1.5 || (br.field && W.fieldAt(br.field, b.x, b.z) < 1.2)) {
+          c.searched = true; br.scanT = t + rand(1.0, 2.5); br.scanYaw = b.yaw + rand(-2, 2);
+        }
+        if (cd < 9 && age > 1.2) maybeClick(b, t, true, o.look);
+        else if (cd > 6 && cd < 18 && age > 2) maybeDart(b, t, c.x, c.z);
+      },
+    },
+    {
+      name: 'roam',
+      score() { return 0.1; },
+      run(x) {
+        const { b, br, P, t, dt, W, o } = x;
+        const it = br.interests.length ? br.interests[br.interests.length - 1] : null;
+        if (t < br.scanT) {
+          o.stand = true;
+          o.look = { yaw: br.scanYaw, pitch: 0 };
+          if (Math.abs(R.util.angleWrap(br.scanYaw - b.yaw)) < 0.1) br.scanYaw = b.yaw + rand(-2.2, 2.2);
+          maybeClick(b, t, false, null);
+          return;
+        }
+        if (it && (P.pingCurious || it.kind === 'death' || it.kind === 'impact') && !it.done) {
+          br.goal = { x: it.x, z: it.z }; it.done = true; br.legMode = P.persName === 'aggressive' ? 'walk' : 'crouch';
+        }
+        if (!br.goal) newRoamGoal(b);
+        o.goal = br.goal; o.mode = br.legMode;
+        if (T.tune.listenEvery > 0 && Math.random() < dt / T.tune.listenEvery) { br.scanT = t + Math.min(12, rand(1.5, 4.0) * T.tune.pauseLen); br.scanYaw = b.yaw + rand(-1.5, 1.5); }
+        if (br.goal && W.fieldAt(fieldFor(b, br.goal, t), b.x, b.z) < 1.0) {
+          br.goal = null; o.goal = null;
+          if (Math.random() < T.tune.pauseP) { br.scanT = t + Math.min(12, rand(1.0, 3.0) * T.tune.pauseLen); br.scanYaw = b.yaw + rand(-2.5, 2.5); }
+        }
+        maybeClick(b, t, false, null);
+      },
+    },
+  ];
+  T.ACTIONS = ACTIONS;
+
+  // which way contact c is facing (yaw), from its last click/gunshot direction or else its movement; null if unknown
+  function facingOf(c, t) {
+    if (c.fyaw != null && t - c.fyawT < 5) return c.fyaw;
+    if (c.myaw != null && t - c.myawT < 3) return c.myaw;
+    return null;
+  }
+  // 1 = we are straight behind contact c, -1 = straight in front, null = its facing is unknown
+  function behindness(b, c, t) {
+    const fy = facingOf(c, t);
+    if (fy == null) return null;
+    const vx = b.x - c.x, vz = b.z - c.z, vl = hyp(vx, vz) || 1;
+    return -((-Math.sin(fy)) * vx + (-Math.cos(fy)) * vz) / vl;
+  }
+
   function tickBot(b, dt, t) {
     const br = b.brain, P = br.pers, W = R.world, wp = b.wpn || (R.weapons && R.weapons.ensure ? R.weapons.ensure(b) : null);
     if (!wp) return;
@@ -335,22 +581,19 @@
     if (br.interests.length) br.interests = br.interests.filter((i) => t - i.t < 8);
 
     const c = pickContact(b, t);
-    const age = c ? t - c.t : Infinity;
-    const cd = c ? hyp(c.x - b.x, c.z - b.z) : Infinity;
     const ey = eyeY(b);
-    const reloading = wp.reloadT > 0;
-    const S = sk();
-
-    let goal = null, mode = 'walk', look = null, stand = false, crouchStill = false;
-    let state;
-
-    // contact-relative aim
-    const aimAt = (x, y, z) => {
-      const dx = x - b.x, dz = z - b.z, dy = y - ey;
-      return { yaw: yawTo(dx, dz), pitch: Math.atan2(dy, hyp(dx, dz)) };
+    const x = {
+      b, br, P, W, wp, t, dt, c, ey, S: sk(),
+      age: c ? t - c.t : Infinity,
+      cd: c ? hyp(c.x - b.x, c.z - b.z) : Infinity,
+      reloading: wp.reloadT > 0, pk: null,
+      o: { goal: null, mode: 'walk', look: null, stand: false, crouchStill: false },
+      aimAt(px, py, pz) {
+        const dx = px - b.x, dz = pz - b.z, dy = py - ey;
+        return { yaw: yawTo(dx, dz), pitch: Math.atan2(dy, hyp(dx, dz)) };
+      },
     };
 
-    // ---- pending deliberate action (dart / click): turn, then do it
     if (br.pending && t > br.pending.until) br.pending = null;
 
     // break off a losing fight: just got hit and low -> slip away (can't shoot back until out of the way)
@@ -359,114 +602,31 @@
       br.relocateMinT = br.relocateUntil = t + rand(2.5, 4);
       br.flee = true;
     }
-    const canEngage = c && age < 0.8 && cd < P.engageRange && c.sig < T.tune.fireConf * (P.persName === 'aggressive' ? 1.3 : 1) && t >= br.relocateMinT && wp.ammo > 0 && !reloading;
-    const continuing = c && c.id === br.engagedId && age < 1.3 && br.burstLeft > 0 && t - br.lastEngageT < 0.5 && wp.ammo > 0 && !reloading;
-    let los = false;
-    if ((canEngage || continuing) && cd > 1.2) los = W.los(b.x, ey, b.z, c.x, c.chest, c.z, true);
 
-    if (c && age < 0.8 && cd < 1.4 && c.sig < 0.75 && wp.knifeT <= 0) {
-      // ---------- KNIFE ----------
-      state = 'knife';
-      look = aimAt(c.x, c.chest, c.z);
-      goal = { x: c.x, z: c.z }; mode = 'walk';
-      if (Math.abs(R.util.angleWrap(look.yaw - b.yaw)) < 22 * DEG && cd < 1.3) {
-        if (R.weapons && R.weapons.knife) R.weapons.knife(b);
-      }
-    } else if ((canEngage || continuing) && los) {
-      // ---------- ENGAGE ----------
-      state = 'engage';
-      if (br.engagedId !== c.id || t - br.lastEngageT > 1.5) {
-        br.engagedId = c.id;
-        br.reactAt = t + lerp(0.45, 0.18, S) * rand(0.85, 1.25) * T.tune.reactMult;
-        br.burstLeft = R.util.randInt(P.burst[0], P.burst[1]);
-        sampleAim(b, c, t, cd);
-      }
-      br.lastEngageT = t;
-      const a = aimAt(c.x, c.chest, c.z);
-      look = { yaw: a.yaw + br.aimOff[0], pitch: a.pitch + br.aimOff[1] };
-      stand = true; crouchStill = P.crouchShoot;
-      const err = Math.abs(R.util.angleWrap(look.yaw - b.yaw)) + Math.abs(look.pitch - b.pitch);
-      if (t >= br.reactAt && t >= br.nextShotT && err < 2.5 * DEG && wp.fireT <= 0) {
-        const r = R.weapons.fire(b);
-        if (r) {
-          T.stats.shots++;
-          if (!br.firstShot) { br.firstShot = true; T.stats.shotSum += t - br.lifeStart; T.stats.shotN++; }
-          br.burstLeft--;
-          br.nextShotT = t + FIRE_INTERVAL + rand(0.03, 0.16);
-          sampleAim(b, c, t, cd);
-          if (br.burstLeft <= 0) {
-            if (Math.random() < P.relocateP) startRelocate(b, t, c);
-            else { br.burstLeft = R.util.randInt(P.burst[0], P.burst[1]); br.nextShotT = t + rand(P.burstPause[0], P.burstPause[1]); }
-          }
-        }
-      }
-    } else if (t < br.relocateUntil && br.relocGoal) {
-      // ---------- RELOCATE (just revealed ourselves) ----------
-      state = 'relocate';
-      goal = br.relocGoal; mode = P.persName === 'sneaky' && cd < 6 ? 'crouch' : 'walk';
-      if (c && age < 3) look = aimAt(c.x, c.chest, c.z);
-      if (wp.ammo <= P.reloadAt && !reloading) doReload(b);
-    } else {
-      if (wp.ammo <= 0 || (wp.ammo <= P.reloadAt && age > 2)) doReload(b);
-      const pk = b.health <= P.hpSeek && age > 1.5 ? healthTarget(b) : null;
-      if (t - br.hurtT < 1.2 && br.hurtYaw != null && !(c && age < 0.8)) {
-        // ---------- HURT: turn toward the damage, maybe move ----------
-        state = 'hurt';
-        look = { yaw: br.hurtYaw, pitch: 0 };
-        if (P.persName !== 'aggressive' && t - br.hurtT < dt * 1.5) startRelocate(b, t, null);
-        stand = true; crouchStill = true;
-      } else if (pk) {
-        state = 'health';
-        goal = pk; mode = 'walk';
-        if (c && age < 4) look = aimAt(c.x, c.chest, c.z);
-      } else if (c && age < 0.8 + P.holdT && cd < 14 && !c.searched && !reloading && wp.ammo > 0 && (c.armed || P.persName !== 'aggressive')) {
-        // ---------- HOLD: wait for them to make another sound ----------
-        state = 'hold';
-        look = aimAt(c.x, c.chest, c.z);
-        stand = true; crouchStill = P.persName !== 'aggressive';
-        maybeClick(b, t, cd < 9 && age > 1.0, look);
-      } else if (c && !c.searched && c.keen && !(P.persName !== 'aggressive' && cd > 7 && othersFighting(br, t, b))) {
-        // ---------- INVESTIGATE / HUNT ----------
-        // (non-aggressive bots let two other shooters finish their fight, then go for the death noise)
-        state = 'hunt';
-        goal = { x: c.x, z: c.z };
-        mode = cd > P.crouchDist ? (cd > P.sprintFar ? 'sprint' : 'walk') : 'crouch';
-        if (P.knifeHunt && cd < 4 && (!c.armed || t - (c.reloadT || -99) < 1.5)) mode = 'crouch';
-        if (cd < 15) look = aimAt(c.x, c.chest, c.z);
-        if (cd < 1.5 || (br.field && W.fieldAt(br.field, b.x, b.z) < 1.2)) {
-          c.searched = true; br.scanT = t + rand(1.0, 2.5); br.scanYaw = b.yaw + rand(-2, 2);
-        }
-        if (cd < 9 && age > 1.2) maybeClick(b, t, true, look);
-        else if (cd > 6 && cd < 18 && age > 2) maybeDart(b, t, c.x, c.z);
-      } else {
-        // ---------- ROAM ----------
-        state = 'roam';
-        const it = br.interests.length ? br.interests[br.interests.length - 1] : null;
-        if (t < br.scanT) {
-          stand = true;
-          look = { yaw: br.scanYaw, pitch: 0 };
-          if (Math.abs(R.util.angleWrap(br.scanYaw - b.yaw)) < 0.1) br.scanYaw = b.yaw + rand(-2.2, 2.2);
-          maybeClick(b, t, false, null);
-        } else {
-          if (it && (P.pingCurious || it.kind === 'death' || it.kind === 'impact') && !it.done) {
-            br.goal = { x: it.x, z: it.z }; it.done = true; br.legMode = P.persName === 'aggressive' ? 'walk' : 'crouch';
-          }
-          if (!br.goal) newRoamGoal(b);
-          goal = br.goal; mode = br.legMode;
-          if (T.tune.listenEvery > 0 && Math.random() < dt / T.tune.listenEvery) { br.scanT = t + Math.min(12, rand(1.5, 4.0) * T.tune.pauseLen); br.scanYaw = b.yaw + rand(-1.5, 1.5); }
-          if (br.goal && W.fieldAt(fieldFor(b, br.goal, t), b.x, b.z) < 1.0) {
-            br.goal = null; goal = null;
-            if (Math.random() < T.tune.pauseP) { br.scanT = t + Math.min(12, rand(1.0, 3.0) * T.tune.pauseLen); br.scanYaw = b.yaw + rand(-2.5, 2.5); }
-          }
-          maybeClick(b, t, false, null);
-        }
-      }
-      // exposed by a nearby dart ping: get out (not aggressive ones: they get ready)
-      if (t - br.exposedT < 0.1 && P.persName !== 'aggressive' && state !== 'hold' && t >= br.relocateUntil) startRelocate(b, t, null);
+    let best = null, bs = 0;
+    const scores = br.scores || (br.scores = {});
+    for (const A of ACTIONS) {
+      let s = A.score(x);
+      if (s > 0) s *= P.w[A.name] == null ? 1 : P.w[A.name];
+      scores[A.name] = s;
+      if (!(s > 0)) continue;
+      if (A.name === br.state) s += KEEP_BONUS;
+      if (s > bs) { bs = s; best = A; }
     }
+    const state = best.name;
+    if (state !== 'sneak' && state !== 'knife') br.sneakId = -1;
+    best.run(x);
     br.state = state;
+    const o = x.o;
+
+    if (state !== 'engage' && state !== 'knife') {
+      if (wp.ammo <= 0 || (wp.ammo <= P.reloadAt && (x.age > 2 || state === 'relocate'))) doReload(b);
+      // exposed by a nearby dart ping: get out (not aggressive ones: they get ready)
+      if (state !== 'relocate' && t - br.exposedT < 0.1 && P.persName !== 'aggressive' && state !== 'hold' && t >= br.relocateUntil) startRelocate(b, t, null);
+    }
 
     // ---- pending action overrides the view
+    let look = o.look;
     if (br.pending) {
       look = { yaw: br.pending.yaw, pitch: br.pending.pitch };
       const err = Math.abs(R.util.angleWrap(look.yaw - b.yaw)) + Math.abs(look.pitch - b.pitch);
@@ -478,12 +638,12 @@
     }
 
     // ---- movement
-    if (stand || !goal) {
-      b.crouch = crouchStill;
+    if (o.stand || !o.goal) {
+      b.crouch = o.crouchStill;
       moveVel(b, dt, 0, 0, 0);
       b.moveMode = 'idle';
     } else {
-      steer(b, dt, t, goal, mode);
+      steer(b, dt, t, o.goal, o.mode);
     }
     // ---- view
     if (!look) {

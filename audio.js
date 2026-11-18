@@ -12,6 +12,8 @@
   const EDGE = 0.07;        // inverse-distance gain reached at the event radius
   const OCC_FREQ = 900;     // occlusion lowpass (Hz)
   const OCC_GAIN = 0.5;     // occlusion gain factor
+  const DIFF_FREQ = 3200;   // lowpass for sound heard round a corner (Hz)
+  const DIFF_GAIN = 0.8;    // gain factor for sound heard round a corner
   const MAX_VOICES = 32;
 
   // per-kind mix: level (voice gain), send (reverb), self (level multiplier when the local player made it)
@@ -263,16 +265,31 @@
     const L = A.listener;
     const spatial = !self && isFinite(ev.x) && isFinite(ev.z);
     let level = spec.level * rnd(0.88, 1.06), est = level;
-    let occluded = false, dist = 0, rolloff = 1;
+    let occluded = false, dist = 0, rolloff = 1, bent = false;
+    let px = ev.x, py = isFinite(ev.y) ? Math.max(0.1, ev.y) : 1, pz = ev.z;
     if (spatial) {
       const ey = isFinite(ev.y) ? ev.y : 1;
       dist = Math.hypot(ev.x - L.x, ey - L.y, ev.z - L.z);
-      const radius = ev.radius > 0 ? ev.radius : 6;
+      // a directional source (gunshot) is quieter behind it: shrink its reach toward us
+      const radius = (ev.radius > 0 ? ev.radius : 6) * (R.soundGain ? R.soundGain(ev, L.x, L.z) : 1);
       if (dist > radius * 1.15 + 0.5) { A.stats.culled++; return; }
       rolloff = clamp((REF * (1 / EDGE - 1)) / Math.max(0.5, radius - REF), 0.2, 25);
       occluded = isOccluded(ev.x, Math.max(0.12, ey), ev.z, L);
+      if (occluded && R.flag && R.flag('diffraction') && R.world && R.world.portal) {
+        // the sound bends round the corner: we hear it from the opening, at the length of the path it took
+        let p = null;
+        try { p = R.world.portal(ev, L.x, L.y, L.z); } catch (e) { p = null; }
+        if (p && !p.direct) {
+          const ox = p.x - L.x, oy = p.y - L.y, oz = p.z - L.z, ol = Math.hypot(ox, oy, oz);
+          if (ol > 0.05) {
+            if (p.d > radius * 1.15 + 0.5) { A.stats.culled++; return; }
+            dist = p.d; bent = true; occluded = false;
+            px = L.x + (ox / ol) * dist; py = L.y + (oy / ol) * dist; pz = L.z + (oz / ol) * dist;
+          }
+        }
+      }
       const dg = REF / (REF + rolloff * (Math.max(dist, REF) - REF));
-      est = level * dg * (occluded ? OCC_GAIN : 1);
+      est = level * dg * (occluded ? OCC_GAIN : bent ? DIFF_GAIN : 1);
     } else if (self) {
       level *= spec.self; est = level;
     }
@@ -282,10 +299,11 @@
     if (occluded) A.stats.occluded++;
     const t = ctx.currentTime + 0.005;
     // routing
-    v.in.gain.value = level * (occluded ? OCC_GAIN : 1);
+    v.in.gain.value = level * (occluded ? OCC_GAIN : bent ? DIFF_GAIN : 1);
     const lp = node(v, ctx.createBiquadFilter());
     lp.type = 'lowpass'; lp.Q.value = occluded ? 0.5 : 0.3;
-    lp.frequency.value = occluded ? OCC_FREQ : clamp(20000 / (1 + dist / 7), 2800, 20000);
+    // bending round an edge loses highs, but far less than going through a wall
+    lp.frequency.value = occluded ? OCC_FREQ : bent ? DIFF_FREQ : clamp(20000 / (1 + dist / 7), 2800, 20000);
     v.lp = lp;
     v.in.connect(lp); lp.connect(v.out);
     let send = spec.send * (occluded ? 1.6 : 1) * (self ? 0.7 : 1);
@@ -293,9 +311,8 @@
       const pan = node(v, ctx.createPanner());
       pan.panningModel = 'HRTF'; pan.distanceModel = 'inverse';
       pan.refDistance = REF; pan.rolloffFactor = rolloff; pan.maxDistance = 10000;
-      const py = isFinite(ev.y) ? Math.max(0.1, ev.y) : 1;
-      if (pan.positionX) { pan.positionX.value = ev.x; pan.positionY.value = py; pan.positionZ.value = ev.z; }
-      else if (pan.setPosition) pan.setPosition(ev.x, py, ev.z);
+      if (pan.positionX) { pan.positionX.value = px; pan.positionY.value = py; pan.positionZ.value = pz; }
+      else if (pan.setPosition) pan.setPosition(px, py, pz);
       v.out.connect(pan); pan.connect(dry);
       v.panner = pan;
       // reverb falls off slower than the direct sound

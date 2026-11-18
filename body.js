@@ -86,14 +86,34 @@
     put(-0.075, hy + spy * 0.06, spz * 0.06, -0.075, hy + spy * 0.5, spz * 0.5, 0.12, 'body');
     put(0.075, hy + spy * 0.06, spz * 0.06, 0.075, hy + spy * 0.5, spz * 0.5, 0.12, 'body');
     put(0, hy + spy * 0.66, spz * 0.66, 0, hy + spy * 0.75, spz * 0.75, 0.105, 'head');
+    // two-handed pistol grip in front of the face, following view pitch (blended out while sprinting)
+    const aim = a._aim || 0, pit = a.pitch || 0;
+    const eyeL = hy + spy * 0.71, GR = 0.36;
+    const gx = 0.07, gy = eyeL - 0.13 + Math.sin(pit) * GR, gz = spz * 0.5 + Math.cos(pit) * GR;
     for (let i = 0; i < 8; i += 4) {
       const s = legs[i], p = legs[i + 3];
       const shx = s * 0.205, shy = hy + spy * 0.5, shz = spz * 0.5;
       const q = L * 0.4 + g.arm0 - g.armA * Math.sin(p);
       const e = g.elb0 + g.elbA * (0.5 - 0.5 * Math.sin(p));
-      const elx = shx + s * 0.02, ely = shy - 0.29 * Math.cos(q), elz = shz + 0.29 * Math.sin(q);
+      let elx = shx + s * 0.02, ely = shy - 0.29 * Math.cos(q), elz = shz + 0.29 * Math.sin(q);
+      let hx2 = elx, hy2 = ely - 0.27 * Math.cos(q + e), hz2 = elz + 0.27 * Math.sin(q + e);
+      if (aim > 0.01) {
+        // two-bone IK from shoulder to the grip; elbow bends down and out
+        let ux = gx - shx, uy = gy - shy, uz = gz - shz, d = Math.hypot(ux, uy, uz) || 1;
+        ux /= d; uy /= d; uz /= d;
+        const dd = Math.min(d, 0.555), along = (0.29 * 0.29 - 0.27 * 0.27 + dd * dd) / (2 * dd);
+        const hh = Math.sqrt(Math.max(0, 0.29 * 0.29 - along * along));
+        // bend direction: (s, -1, 0) made perpendicular to u
+        let bx = s * 0.6, by = -1, bz = 0;
+        const bu = bx * ux + by * uy + bz * uz; bx -= bu * ux; by -= bu * uy; bz -= bu * uz;
+        const bl = Math.hypot(bx, by, bz) || 1;
+        const ax2 = shx + ux * along + (bx / bl) * hh, ay2 = shy + uy * along + (by / bl) * hh, az2 = shz + uz * along + (bz / bl) * hh;
+        const tx2 = shx + ux * dd, ty2 = shy + uy * dd, tz2 = shz + uz * dd;
+        elx += (ax2 - elx) * aim; ely += (ay2 - ely) * aim; elz += (az2 - elz) * aim;
+        hx2 += (tx2 - hx2) * aim; hy2 += (ty2 - hy2) * aim; hz2 += (tz2 - hz2) * aim;
+      }
       put(shx, shy, shz, elx, ely, elz, 0.048, 'arm');
-      put(elx, ely, elz, elx, ely - 0.27 * Math.cos(q + e), elz + 0.27 * Math.sin(q + e), 0.042, 'arm');
+      put(elx, ely, elz, hx2, hy2, hz2, 0.042, 'arm');
     }
     caps.length = n;
     a._top = hy + spy * 0.75 + 0.105;
@@ -138,6 +158,9 @@
         if (!a.alive) continue;
         const sp = Math.hypot(a.vx || 0, a.vz || 0);
         if (a._phase == null) { a._phase = Math.random() * 6.283; a._mx = 0; a._mz = 1; }
+        // gun raised unless sprinting
+        const aimT = R.flag && !R.flag('selfEcho') ? 0 : sp > WALK + 0.5 ? 0 : 1;
+        a._aim = (a._aim == null ? aimT : a._aim) + (aimT - (a._aim == null ? aimT : a._aim)) * Math.min(1, dt * 8);
         if (sp > 0.2) {
           // travel direction in the actor's local frame, smoothed
           const sy = Math.sin(a.yaw || 0), cy = Math.cos(a.yaw || 0);

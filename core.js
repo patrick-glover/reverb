@@ -45,7 +45,7 @@
     sprint:  { radius: 13,  rays: 600,  bounces: 1 },
     crouch:  { radius: 2.2, rays: 70,   bounces: 0 },
     click:   { radius: 9,   rays: 2400, bounces: 1, cone: 75 },
-    gunshot: { radius: 34,  rays: 6000, bounces: 2 },
+    gunshot: { radius: 34,  rays: 6000, bounces: 2, directivity: 0.45 }, // muzzle blast: rear reaches 45% as far
     impact:  { radius: 6,   rays: 300,  bounces: 0 },
     reload:  { radius: 4,   rays: 120,  bounces: 0 },
     ping:    { radius: 18,  rays: 3500, bounces: 1 },
@@ -70,10 +70,23 @@
       actor: actor || null,
       dir: ex.dir || null,
       cone: ex.cone != null ? ex.cone : base.cone || null,
+      // rear/front reach ratio for a directional source (0 = omnidirectional); needs dir
+      directivity: (R.flag && !R.flag('directivity')) ? 0 : ex.directivity != null ? ex.directivity : base.directivity || 0,
     };
     if (actor) actor.lastNoise = R.time || 0;
     R.bus.emit('sound', ev);
     return ev;
+  };
+
+  // how far a sound reaches toward (x,z), as a fraction of its radius: 1 ahead of a directional source,
+  // ev.directivity straight behind it, smooth in between. Omnidirectional sounds return 1.
+  R.soundGain = function (ev, x, z) {
+    const back = ev && ev.directivity, d = ev && ev.dir;
+    if (!back || !d) return 1;
+    const dl = Math.hypot(d[0], d[2]), ox = x - ev.x, oz = z - ev.z, ol = Math.hypot(ox, oz);
+    if (dl < 1e-6 || ol < 1e-6) return 1;
+    const c = (ox * d[0] + oz * d[2]) / (dl * ol);
+    return back + (1 - back) * Math.pow((1 + c) / 2, 1.5);
   };
 
   // ---------------- actors ----------------
@@ -354,6 +367,32 @@
         if (v < best) { best = v; bx = nx; bz = nz; }
       }
       return { x: (bx + 0.5) * NAV, z: (bz + 0.5) * NAV };
+    },
+    // walking-distance field from a sound, computed once per sound event and shared by every listener
+    soundField(ev) {
+      if (!ev._field) ev._field = this.flowField(ev.x, ev.z, ev.radius + 1);
+      return ev._field;
+    },
+    // Where a listener at (lx,ly,lz) hears sound event ev coming from. In line of sight: the source itself.
+    // Otherwise the sound has bent round corners: walk the shortest path from the listener toward the source and
+    // return the last point still visible from the listener (the doorway or corner it comes round), plus the path
+    // length d. Returns null when no walkable path reaches the listener within the sound's radius.
+    portal(ev, lx, ly, lz) {
+      const sy = Math.max(0.15, ev.y);
+      if (this.los(lx, ly, lz, ev.x, sy, ev.z, true)) {
+        return { x: ev.x, y: sy, z: ev.z, d: Math.hypot(ev.x - lx, sy - ly, ev.z - lz), direct: true };
+      }
+      const f = this.soundField(ev), d = this.fieldAt(f, lx, lz);
+      if (!(d <= ev.radius)) return null;
+      let px = lx, pz = lz, vx = lx, vz = lz;
+      for (let k = 0; k < 200; k++) {
+        const p = this.stepToward(f, px, pz);
+        if (!p || (p.x === px && p.z === pz)) break;
+        px = p.x; pz = p.z;
+        if (this.los(lx, ly, lz, px, ly, pz, true)) { vx = px; vz = pz; }
+        else if (Math.hypot(px - vx, pz - vz) > 2.5) break; // well past the opening
+      }
+      return { x: vx, y: ly + (sy - ly) * 0.3, z: vz, d, direct: false };
     },
     hearDist(x0, z0, x1, z1, maxDist) {
       if (Math.hypot(x1 - x0, z1 - z0) > maxDist) return Infinity;

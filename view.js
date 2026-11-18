@@ -448,7 +448,7 @@
       R.bus.on('sound', (ev) => {
         if (!ev || !R.player || ev.actor !== R.player) return;
         const now = R.echo ? R.echo.time : 0;
-        if (ev.kind === 'gunshot') { shotT = now; shotAmp = 1.1; flashT = now; }
+        if (ev.kind === 'gunshot') { shotT = now; shotAmp = 1.1; if (R.flag && R.flag('muzzleFlash')) flashT = now; }
         else if (ev.kind === 'click') { if (now - shotT > 0.25 || shotAmp < 0.5) { shotT = now; shotAmp = 0.5; } }
         else if (ev.kind === 'reload') { shotT = now; shotAmp = 0.3; }
       });

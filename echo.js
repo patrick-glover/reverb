@@ -2,7 +2,7 @@
 // Every 'sound' becomes a job: rays (Fibonacci sphere or cone, randomly rotated) are traced through R.world
 // with mirror bounces (+jitter). Each hit becomes a glowing dot whose birth time is pathLength / SPEED, so the
 // imprint grows outward like a wavefront. Static dots go straight into a ring buffer (born in the future; the
-// shader hides unborn dots). Dots that land on actors are kept in the actor's local frame and follow it.
+// shader hides unborn dots). Dots that land on actors freeze in place as ghost images (flag stickyDots makes them follow).
 (function () {
   'use strict';
   const R = (window.R = window.R || {});
@@ -138,6 +138,14 @@
   }
 
   function onSound(ev) {
+    addJob(ev, 0, 1);
+    if (ev && !ev.diffracted && R.flag && R.flag('diffraction') && ev.radius >= DIFF_MIN_RADIUS && !(ev.cone && ev.dir)) {
+      try { diffract(ev); } catch (e) { console.error('[echo] diffract', e); }
+    }
+  }
+
+  // delay: seconds before the job's wavefront starts; gain: brightness multiplier
+  function addJob(ev, delay, gain) {
     if (!ev || !(ev.radius > 0) || !(ev.rays > 0)) return;
     if (![ev.x, ev.y, ev.z].every(Number.isFinite)) return;
     const src = ev.kind === 'ping' ? 'ping' : (COL[ev.source] ? ev.source : 'world');
@@ -149,14 +157,73 @@
     jobs.push({
       ev, x: ev.x, y: ev.y, z: ev.z, radius: ev.radius, n: Math.min(20000, ev.rays | 0),
       bounces: Math.max(0, Math.min(3, ev.bounces | 0)),
-      actor: ev.actor || null, t0: E.time, i: 0, kd,
+      actor: ev.actor || null, t0: E.time + delay, i: 0, kd, gain,
+      dirv: ev.directivity && ev.dir && !cone ? ev.dir : null, back: ev.directivity || 0, seenA: null,
       col: base,
       M: cone ? coneBasis(ev.dir[0], ev.dir[1], ev.dir[2]) : randRot(),
       cosH: cone ? Math.cos((cone * 0.5 * Math.PI) / 180) : -1,
       seen: new Set(),
       spacing: cone ? Math.sqrt((2 * Math.PI * (1 - Math.cos((cone * 0.5 * Math.PI) / 180))) / Math.max(1, ev.rays)) : Math.sqrt((4 * Math.PI) / Math.max(1, ev.rays)),
       near: nearPlayer, mfpSum: 0, mfpN: 0,
+      self: ev.kind === 'gunshot' && !!(R.flag && R.flag('selfEcho')),
     });
+  }
+
+  // ---- diffraction: sound bends round door jambs and corners. Find the edge of the source's acoustic shadow on
+  // the nav grid (cells it can see that border cells it can't, further along the walking path) and re-emit a dimmer
+  // cone from a few of them into the shadow, delayed by the walk there. That paints the rooms round the corner.
+  const DIFF_TESTS = 240, DIFF_MIN_RADIUS = 9, DIFF_MAX = 4, DIFF_SPACING = 2.2, DIFF_GAIN = 0.55, DIFF_RAYS = 0.12, DIFF_REACH = 0.55;
+  function diffract(ev) {
+    const W = R.world;
+    if (!W || !W.soundField || !W.nav) return;
+    const f = W.soundField(ev), nw = W.navW, nh = W.navH, cell = (W.w * R.TILE) / nw;
+    const sx = ev.x, sz = ev.z, sy = Math.max(0.3, Math.min(1.7, ev.y));
+    const maxD = ev.radius * 0.7;
+    const shadowed = (i) => {
+      const cx = ((i % nw) + 0.5) * cell, cz = (((i / nw) | 0) + 0.5) * cell;
+      return f[i] > Math.hypot(cx - sx, cz - sz) * 1.08 + 0.6;
+    };
+    const cands = [];
+    for (let i = 0; i < f.length; i++) {
+      const d = f[i];
+      if (!(d >= 1.5 && d <= maxD) || shadowed(i)) continue;
+      const cx = i % nw, cz = (i / nw) | 0;
+      let ax = 0, az = 0, n = 0;
+      const nb = (j, ox, oz) => { if (f[j] > d && f[j] !== Infinity && shadowed(j)) { ax += ox; az += oz; n++; } };
+      if (cx > 0) nb(i - 1, -1, 0);
+      if (cx < nw - 1) nb(i + 1, 1, 0);
+      if (cz > 0) nb(i - nw, 0, -1);
+      if (cz < nh - 1) nb(i + nw, 0, 1);
+      if (n) cands.push({ i, d, ax, az, x: (cx + 0.5) * cell, z: (cz + 0.5) * cell });
+    }
+    E.stats.diffr = 0;
+    if (!cands.length) return;
+    cands.sort((a, b) => a.d - b.d);
+    const picked = [];
+    let tests = 0;
+    for (const c of cands) {
+      if (picked.length >= DIFF_MAX || tests >= DIFF_TESTS) break;
+      if (picked.some((p) => Math.hypot(p.x - c.x, p.z - c.z) < DIFF_SPACING)) continue;
+      // the neighbour must really be out of sight (low furniture blocks walking, not sound)
+      const bx = c.x + Math.sign(c.ax) * cell, bz = c.z + Math.sign(c.az) * cell;
+      tests += 2;
+      if (W.los(sx, sy, sz, bx, sy, bz, true) || !W.los(sx, sy, sz, c.x, sy, c.z, true)) continue;
+      picked.push(c);
+    }
+    for (const c of picked) {
+      // aim into the shadow, bent away from the source's straight line
+      let dx = c.x - sx, dz = c.z - sz; const dl = Math.hypot(dx, dz) || 1; dx /= dl; dz /= dl;
+      const al = Math.hypot(c.ax, c.az) || 1;
+      const ux = dx * 0.5 + c.ax / al, uz = dz * 0.5 + c.az / al, ul = Math.hypot(ux, uz) || 1;
+      const reach = (ev.radius - c.d) * DIFF_REACH * R.soundGain(ev, c.x, c.z);
+      if (reach < 2) continue;
+      addJob({
+        x: c.x, y: sy, z: c.z, kind: ev.kind, source: ev.source, actor: ev.actor,
+        radius: reach, rays: Math.max(40, Math.round(ev.rays * DIFF_RAYS)), bounces: 1,
+        dir: [ux / ul, 0, uz / ul], cone: 150, diffracted: true,
+      }, c.d / E.SPEED, DIFF_GAIN);
+      E.stats.diffr++;
+    }
   }
 
   const tmp = [0, 0, 0];
@@ -187,7 +254,7 @@
   function emitHit(job, h, path, bounce, intensity) {
     const kd = job.kd;
     const mk = MATK[h.mat] || 1;
-    let I = intensity * kd.gain * mk;
+    let I = intensity * kd.gain * mk * job.gain;
     if (I < 0.012) return;
     // colour: source tint, shifted toward blue on bounces
     const c = job.col, bt = bounce ? Math.min(0.75, 0.42 * bounce) : 0;
@@ -199,9 +266,15 @@
       const a = h.actor;
       const AH = R.actorHeight ? R.actorHeight(a) : a.h || 1.8;
       // skip dots that would sit in the local player's own head (camera)
-      if (a === R.player && h.y - (a.y || 0) > AH - 0.45) return;
+      if (a === R.player && (h.cap ? h.part === 'head' : h.y - (a.y || 0) > AH - 0.45)) return;
       I = Math.min(1.5, I * 1.7 + 0.15);
       const S = sz * E.ACTOR_SIZE;
+      // log a couple of hits per body per sound so bots can see the same dots a player would
+      const sa = job.seenA || (job.seenA = new Map()), na = sa.get(a) || 0;
+      if (na < 2) {
+        sa.set(a, na + 1);
+        E.actorHits.push({ actor: a, x: h.x, y: h.y, z: h.z, nx: h.nx, nz: h.nz, part: h.part, born, src: job.actor });
+      }
       const tryPut = (x, y, z, J, b2) => {
         const qx = Math.round((x - a.x) * 22), qy = Math.round((y - (a.y || 0)) * 22), qz = Math.round((z - a.z) * 22);
         const key = ((qx * 73856093) ^ (qy * 19349663) ^ (qz * 83492791) ^ ((a.id | 0) * 40503) ^ ((7 + bounce) * 2654435761)) | 0;
@@ -357,7 +430,14 @@
       dz = M[6] * lx + M[7] * fy + M[8] * lz;
     }
     let ox = job.x, oy = job.y, oz = job.z, path = 0, casts = 0;
-    const radius = job.radius, W = R.world, opts = job.opts || (job.opts = { actors: true, ignore: job.actor });
+    let radius = job.radius;
+    if (job.dirv) {
+      // directional source (muzzle blast): rays behind the gun die out sooner
+      const v = job.dirv, c = (dx * v[0] + dy * v[1] + dz * v[2]) / (Math.hypot(v[0], v[1], v[2]) || 1);
+      radius *= job.back + (1 - job.back) * Math.pow((1 + c) / 2, 1.5);
+    }
+    // a gunshot is held in front of the shooter, so its blast and reverb land on the shooter's own body too
+    const W = R.world, opts = job.opts || (job.opts = { actors: true, ignore: job.self ? null : job.actor });
     for (let bounce = 0; bounce <= job.bounces; bounce++) {
       const remain = radius - path;
       if (remain <= 0.05) break;
@@ -418,7 +498,8 @@
     actorDots: ad,
     actorDotsPos, actorDotsColor, actorDotsBorn, actorDotsLife, actorDotsSize,
     actorDotsCount: 0,
-    stats: { casts: 0, jobs: 0, ms: 0 },
+    actorHits: [],       // {actor,x,y,z,nx,nz,part,born,src}: dots that landed on bodies, read by bots.js
+    stats: { casts: 0, jobs: 0, ms: 0, diffr: 0 },
     _inited: false,
 
     init() {
@@ -428,6 +509,7 @@
     },
     reset() {
       jobs.length = 0;
+      this.actorHits.length = 0;
       dots.born.fill(-1e6); dots.life.fill(0);
       dots.head = 0; dots.written = 0; dots.gen++;
       for (let i = 0; i < ad.n; i++) ad.actor[i] = null;
@@ -454,6 +536,8 @@
           if (job.i >= job.n) { finishJob(job); jobs.shift(); }
         }
       } else jobs.length = 0;
+      // nobody reading the hit log (no bots): keep it bounded
+      if (this.actorHits.length > 400) this.actorHits.splice(0, this.actorHits.length - 400);
       // ---- actor dots: expire, convert dead actors' dots to static, resolve to world
       let cnt = 0;
       for (let i = ad.n - 1; i >= 0; i--) {

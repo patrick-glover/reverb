@@ -5,7 +5,7 @@
 (function () {
   'use strict';
   const R = (window.R = window.R || {});
-  R.VERSION = '0.3.0';
+  R.VERSION = '0.5.0';
 
   // ---- registry -------------------------------------------------------------------------------------
   // type 'bool' | 'num'. apply(v) runs at boot and on every change (for flags that set a module constant).
@@ -13,14 +13,26 @@
   const DEFS = [
     { key: 'humanoid', group: 'Bodies', label: 'Humanoid bodies', type: 'bool', def: true, when: 'live',
       help: 'On: 13-capsule bodies with a walk cycle, used by echoes and bullets alike. Off: original cylinder + head sphere.' },
-    { key: 'stickyDots', group: 'Echo', label: 'Dots stick to bodies', type: 'bool', def: true, when: 'live',
-      help: 'On: dots that hit a player follow them (original). Off: they freeze where the sound hit.' },
+    { key: 'stickyDots', group: 'Echo', label: 'Dots stick to bodies', type: 'bool', def: false, when: 'live',
+      help: 'Off: dots that hit a player freeze where the sound hit, as a ghost image. On: they follow the body (pre-0.4).' },
+    { key: 'selfEcho', group: 'Echo', label: 'Gunshots light the shooter', type: 'bool', def: true, when: 'live',
+      help: 'On: the gun is held out in front and its blast and reverb paint the shooter\'s own arms and body. Off: the shooter is invisible to their own shot.' },
+    { key: 'muzzleFlash', group: 'Combat', label: 'Muzzle flash', type: 'bool', def: false, when: 'live',
+      help: 'On: a white spark burst at your own muzzle (pre-0.4). Off: a shot only shows through its echoes.' },
+    { key: 'fireInterval', group: 'Combat', label: 'Pistol fire interval (s)', type: 'num', def: 0.2, min: 0.08, max: 0.5, step: 0.01, when: 'live',
+      apply: (v) => R.weapons && (R.weapons.C.FIRE_INTERVAL = v) },
+    { key: 'diffraction', group: 'Acoustics', label: 'Sound bends round corners', type: 'bool', def: true, when: 'live',
+      help: 'On: loud sounds re-emit dimmer dots from doorways and corners into the rooms beyond, and a sound out of sight is heard (by you and bots) from the opening it comes round. Off: straight rays only, heard from the true position.' },
+    { key: 'directivity', group: 'Acoustics', label: 'Gunshots louder in front', type: 'bool', def: true, when: 'live',
+      help: 'On: a gunshot reaches about twice as far ahead of the gun as behind it, for dots, audio and bot hearing. Off: the same in every direction.' },
     { key: 'edges', group: 'Echo', label: 'Prop edge highlights', type: 'bool', def: true, when: 'live',
       apply: (v) => R.echo && (R.echo.EDGES = v) },
     { key: 'soundSpeed', group: 'Echo', label: 'Wavefront speed (m/s)', type: 'num', def: 26, min: 8, max: 120, step: 1, when: 'live',
       apply: (v) => R.echo && (R.echo.SPEED = v) },
     { key: 'bounceDim', group: 'Echo', label: 'Bounce brightness', type: 'num', def: 0.45, min: 0, max: 1, step: 0.05, when: 'live',
       apply: (v) => R.echo && (R.echo.BOUNCE_DIM = v) },
+    { key: 'botSight', group: 'Bots', label: 'Bots see echo dots', type: 'bool', def: true, when: 'live',
+      help: 'On: bots spot dots that land on bodies, from anyone\'s sound, if the dot is in front of them and in line of sight (what you see). Off: bots only see dots from their own clicks and darts.' },
     { key: 'bots', group: 'Match', label: 'Bot count', type: 'num', def: 5, min: 0, max: 10, step: 1, when: 'match',
       apply: (v) => R.game && (R.game.botCount = v) },
     { key: 'godMode', group: 'Debug', label: 'Player takes no damage', type: 'bool', def: false, when: 'live' },
@@ -161,7 +173,7 @@
         const E = R.echo || {}, s = E.stats || {};
         perfEl.textContent =
           `v${R.VERSION}  ${Math.round(frames / acc)} fps\n` +
-          `echo ${(s.ms || 0).toFixed(2)} ms  casts ${s.casts || 0}  jobs ${s.jobs || 0}\n` +
+          `echo ${(s.ms || 0).toFixed(2)} ms  casts ${s.casts || 0}  jobs ${s.jobs || 0}  corners ${s.diffr || 0}\n` +
           `actor dots ${E.actorDotsCount || 0}  flags: ${F.changed().join(' ') || 'defaults'}`;
         frames = 0; acc = 0;
       }

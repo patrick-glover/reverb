@@ -2,9 +2,11 @@
 
 *Every sound is light.*
 
-A first-person deathmatch in total darkness. Nothing is ever lit. Every sound (footsteps, tongue clicks, gunshots) casts rays that travel at a slowed speed of sound and leave glowing dot-matrix imprints where they hit walls, furniture, and bodies. The rays bounce, so a gunshot paints the room twice: first the direct wave, then a dimmer reverb. Dots that land on a player stick to them, so you see a ghostly point silhouette for a moment.
+A first-person deathmatch in total darkness. Nothing is ever lit. Every sound (footsteps, tongue clicks, gunshots) casts rays that travel at a slowed speed of sound and leave glowing dot-matrix imprints where they hit walls, furniture, and bodies. The rays bounce, so a gunshot paints the room twice: first the direct wave, then a dimmer reverb. Dots that land on a player freeze where they hit, leaving a ghost image of where that body was. You hold the gun out in front of you, so every shot also paints your own hands and arms.
 
-You vs 5 bots, free-for-all. The bots are blind too and play by the same rules: they only **hear**. Every shot you fire lights up the room for you and also tells everyone where you are.
+You vs 5 bots, free-for-all. The bots play by the same rules: they **hear** every sound, and they see only the echo dots that land on bodies in front of them, just like you. Every shot you fire lights up the room for you and also tells everyone where you are, and which way you're facing.
+
+Sound bends round corners: a gunshot in the next room spills dimmer dots through the doorway, and you hear it coming from the doorway, not through the wall.
 
 ![Gunshot wavefront](docs/gunshot-wavefront.png)
 ![Tongue-click echolocation cone](docs/click-cone.png)
@@ -42,12 +44,12 @@ Plain browser JS, global `R` namespace, three.js r149 only for drawing the point
 | File | What |
 |---|---|
 | `flags.js` | version, feature flags, dev panel |
-| `body.js` | humanoid bodies: capsule skeleton, walk cycle, ray tests |
-| `core.js` | world (boxes, 3D raycasting, ~0.15 µs/ray), collision, nav grid, sound hearing by walking distance, input, loop |
-| `echo.js` / `view.js` | ray-traced echo simulation (wavefront timing, bounces, lattice-snapped dots, dots that stick to actors) and the WebGL point renderer |
+| `body.js` | humanoid bodies: capsule skeleton, walk cycle, pistol grip, ray tests |
+| `core.js` | world (boxes, 3D raycasting, ~0.15 µs/ray), collision, nav grid, sound hearing by walking distance and round corners, input, loop |
+| `echo.js` / `view.js` | ray-traced echo simulation (wavefront timing, bounces, lattice-snapped dots, ghost images on bodies) and the WebGL point renderer |
 | `props.js` / `maps.js` | furniture built from thin boxes; Apartment, Office, Warehouse |
 | `player.js` / `weapons.js` | FPS controller, footsteps, pistol, sonar darts, knife |
-| `bots.js` | blind bots that hunt only by sound |
+| `bots.js` | bots that hunt by sound and echo dots; each tick they score their possible actions and run the best |
 | `audio.js` | procedural SFX, HRTF panning, occlusion, convolution reverb |
 | `game.js` / `ui.js` | match flow, respawns, pickups, HUD with damage-direction arc |
 
