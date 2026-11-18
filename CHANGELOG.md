@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0-dev
+- Online play with room codes. **HOST ONLINE** makes a 4-character room and an invite link (`?room=CODE`); **JOIN WITH CODE** joins one. The host sets map, max players (2–8), bot fill, bot skill, kill limit and time limit in the lobby. Bots fill empty slots and swap out as people join and leave mid-match.
+- The room server (`server/`) is a Cloudflare Worker with one Durable Object per room. It runs the actual match from the same game scripts (bots, hits, respawns, pickups, clock). Browsers send their own movement and predict their own shots; only sound events cross the wire, and each browser traces its own echoes.
+- New players are held out of a match until they click in, so the click-to-play screen can't get you killed.
+- `/admin` monitoring console: players and rooms live, unique players, sessions, hours played, matches, peak concurrency, 48 h charts, per-day table and an event log. JSON logs via `wrangler tail`.
+- Host controls: **X** on the pause screen ends the match for everyone (results, then the lobby); **Close room** in the lobby sends everyone out.
+- New type: dot-matrix **Doto** for big text (map name, CLICK TO PLAY, timer, HP, killer names, room code) and **Chakra Petch** for everything else, replacing the system monospace. Both are embedded in `vendor/fonts.css` (SIL OFL) so the game still runs offline from `file://`.
+- The "every sound is light" tagline is gone from the menu.
+- Typing in text fields no longer triggers game keys.
+- See `docs/MULTIPLAYER.md` for the protocol, deploying and the scaling plan.
+
 ## 0.5.0
 - Sound bends round corners (flag `diffraction`). Loud sounds find the edge of their shadow (door jambs, wall corners) and re-emit a dimmer cone of dots into the rooms beyond, delayed by the walk there. A sound out of sight is heard from the opening it comes round, at the length of the path it took, with less muffling than sound through a wall. Bots hear it the same way and walk to the opening instead of the true position; an estimate like that is never sharp enough for them to shoot at.
 - Gunshots are louder in front (flag `directivity`): the muzzle blast reaches about twice as far ahead of the gun as behind it, for dots, audio and bot hearing.

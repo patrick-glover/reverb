@@ -7,8 +7,10 @@
   'use strict';
   const R = (window.R = window.R || {});
 
-  const CAP = 300000;          // static dot ring capacity
-  const ACAP = 24000;          // actor dot pool capacity
+  // headless (game server): nobody draws the dots, only bots read actorHits, so keep the buffers small
+  const HEADLESS = !!window.REVERB_HEADLESS;
+  const CAP = HEADLESS ? 4096 : 300000;   // static dot ring capacity
+  const ACAP = HEADLESS ? 4096 : 24000;   // actor dot pool capacity
   const G = 0.06;              // lattice pitch (m)
   const IG = 1 / G;
   const LIFE = 3.2, ALIFE = 1.1, CORPSE_LIFE = 2.6;

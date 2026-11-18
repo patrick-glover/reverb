@@ -1,19 +1,20 @@
 # Roadmap
 
-Current: **v0.5.0** (live at patrickglover.io/reverb, GitHub Pages from `main`).
+Current: **v0.6.0-dev**, live at patrickglover.io/reverb (GitHub Pages from `main`).
 
-## Next: multiplayer
+## Multiplayer (0.6.0-dev, live)
 
-Not started. Notes from planning:
+Room codes on a Cloudflare Worker (`reverb-api.patrickglover.io`), one Durable Object per room running the
+match headless. Details, protocol and the scaling plan are in `docs/MULTIPLAYER.md`. Server changes: `npm run deploy`
+in `server/` (restarts live rooms).
 
-- **Sync sound events, not dots.** Dots are only ever drawn locally, so the network carries sound events (`R.sound` args: kind, position, direction, actor id). That's a few bytes each, and every client traces its own echo rays. The `R.bus` 'sound' event is the natural hook.
-- **Actor state**: position, yaw/pitch, velocity, crouch, alive, sent ~20 Hz with interpolation. Bodies (`body.js`) pose from velocity, so remote walk cycles come for free.
-- **One authority for hits**: `R.weapons.fire` raycasts and calls `damage`. In MP the host (or server) must resolve shots, damage, kills, respawns and pickups (`game.js`), and clients send inputs or fire requests.
-- **Bots** run only on the authority and replicate like players. `bots.js` already never reads live positions of others, only sounds and `R.echo.actorHits`. On a host, `actorHits` only covers sounds the host traced; fine if the host traces everything it simulates.
-- **Open decision, transport:**
-  - WebRTC peer-to-peer with one player hosting. Keeps it a static site on Pages, but needs a signalling step (copy/paste or a tiny relay).
-  - A small authoritative server, e.g. a Cloudflare Worker with a Durable Object per room over WebSocket. Cleaner authority and anti-cheat, but it's a backend to run.
-- **Open questions:** lobby/room codes, how many players per match, whether bots fill empty slots, and how the per-browser dev flags interact (gameplay flags must come from the host).
+Next for multiplayer, roughly in order:
+- The room generates footsteps from movement (closes the silent-walk cheat).
+- Send movement only when it changes, at 20 Hz (about half the request cost).
+- Reconnect after a refresh; host kick.
+- Quick play (matchmaker per region) and Analytics Engine for stats, if it gets popular.
+- Lag compensation for shots.
+- Bot brain experiments: an external decision model as a slow "commander" over the utility brain (not per tick).
 
 ## Backlog (from the v0.4–0.5 brainstorms)
 

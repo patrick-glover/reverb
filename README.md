@@ -13,7 +13,7 @@ Sound bends round corners: a gunshot in the next room spills dimmer dots through
 ![Warehouse](docs/warehouse.png)
 
 ## Play
-Open `index.html` in Chrome. No build step and no server: three.js is vendored in `vendor/`, so it runs offline straight from disk. Click to capture the mouse. **Headphones strongly recommended**: all audio is HRTF-spatialized with room-sized reverb.
+Open `index.html` in Chrome. No build step and no server: three.js and the fonts (Doto, Chakra Petch) are vendored in `vendor/`, so it runs offline straight from disk. Click to capture the mouse. **Headphones strongly recommended**: all audio is HRTF-spatialized with room-sized reverb.
 
 | Key | Action |
 |---|---|
@@ -30,6 +30,8 @@ Open `index.html` in Chrome. No build step and no server: three.js is vendored i
 | ` | dev flags panel |
 
 Floors matter: carpet muffles your steps, puddles and metal grates make them louder.
+
+**Online:** HOST ONLINE on the menu makes a room and gives you a code and an invite link; friends use JOIN WITH CODE. Bots fill empty slots if the host wants them. Running the room server locally and deploying it are covered in `docs/MULTIPLAYER.md`.
 
 ## Development
 Version lives in `flags.js` (`R.VERSION`) and changes are logged in `CHANGELOG.md`.
@@ -52,8 +54,10 @@ Plain browser JS, global `R` namespace, three.js r149 only for drawing the point
 | `bots.js` | bots that hunt by sound and echo dots; each tick they score their possible actions and run the best |
 | `audio.js` | procedural SFX, HRTF panning, occlusion, convolution reverb |
 | `game.js` / `ui.js` | match flow, respawns, pickups, HUD with damage-direction arc |
+| `net.js` | online play: lobby overlay, sending own movement, predicted shots, applying the room's snapshots and events |
+| `server/` | Cloudflare Worker + Durable Objects: one room per code running the match headless, stats and `/admin` console |
 
-`ROADMAP.md` has the plan (multiplayer next) and backlog. `tools/sim.js` runs a headless bot match for checking changes.
+`ROADMAP.md` has the plan and backlog. `tools/sim.js` runs a headless bot match for checking changes.
 
 `SPEC.md` is the design document and the contract each module was written against.
 

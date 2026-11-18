@@ -1,0 +1,20 @@
+{
+  "name": "reverb-mp",
+  "version": "1.0.0",
+  "description": "REVERB multiplayer server (Cloudflare Worker + Durable Objects)",
+  "scripts": {
+    "build": "node build-sim.js",
+    "dev": "node build-sim.js && wrangler dev",
+    "deploy": "node build-sim.js && wrangler deploy",
+    "tail": "wrangler tail",
+    "smoke": "node test/smoke.mjs"
+  },
+  "type": "commonjs",
+  "devDependencies": {
+    "wrangler": "^4.164.0"
+  },
+  "allowScripts": {
+    "workerd@1.20261117.1": true
+  },
+  "private": true
+}

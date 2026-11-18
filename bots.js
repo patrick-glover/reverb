@@ -99,18 +99,17 @@
       for (let i = R.actors.length - 1; i >= 0; i--) if (R.actors[i].brain) R.actors.splice(i, 1);
       const names = NAMES.slice().sort(() => Math.random() - 0.5);
       const out = [];
-      for (let i = 0; i < n; i++) {
-        const persName = PERS_ORDER[i % PERS_ORDER.length];
-        const b = R.makeActor({ name: names[i % names.length], isBot: true, color: COLORS[i % COLORS.length] });
-        b.persona = persName;
-        b.brain = newBrain(persName);
-        b.moveMode = 'idle';
-        if (R.weapons && R.weapons.ensure) R.weapons.ensure(b);
-        else b.wpn = { ammo: 12, mag: 12, reloadT: 0, fireT: 0, darts: 3, knifeT: 0, clickT: 0, dartT: 0 };
-        R.actors.push(b);
-        out.push(b);
-      }
+      for (let i = 0; i < n; i++) out.push(makeBot(i, names[i % names.length]));
       return out;
+    },
+
+    // add one bot mid-match (multiplayer bot fill); game.js spawns it. Picks a name and colour not in use.
+    addOne() {
+      if (!this._inited) this.init();
+      const used = new Set(R.actors.map((a) => a.name));
+      const i = R.actors.filter((a) => a.brain).length;
+      const name = NAMES.find((nm) => !used.has(nm)) || 'Bot' + (i + 1);
+      return makeBot(i, name);
     },
 
     // called by game.js after it positions/heals the bot
@@ -139,6 +138,18 @@
       return b.name + ' [' + br.persName + '] ' + br.state + ' contacts:' + br.contacts.size + (sc ? ' (' + sc + ')' : '');
     },
   });
+
+  function makeBot(i, name) {
+    const persName = PERS_ORDER[i % PERS_ORDER.length];
+    const b = R.makeActor({ name, isBot: true, color: COLORS[i % COLORS.length] });
+    b.persona = persName;
+    b.brain = newBrain(persName);
+    b.moveMode = 'idle';
+    if (R.weapons && R.weapons.ensure) R.weapons.ensure(b);
+    else b.wpn = { ammo: 12, mag: 12, reloadT: 0, fireT: 0, darts: 3, knifeT: 0, clickT: 0, dartT: 0 };
+    R.actors.push(b);
+    return b;
+  }
 
   const now = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
   const sk = () => R.util.clamp(T.skill == null ? 0.5 : T.skill, 0, 1);

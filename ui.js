@@ -4,7 +4,11 @@
   'use strict';
   const R = (window.R = window.R || {});
 
-  const FONT = 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+  // Chakra Petch for small text, dot-matrix Doto for big text (both embedded in vendor/fonts.css)
+  const FONT = '"Chakra Petch", ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+  const DISPLAY = '"Doto", ' + FONT;
+  const DISPLAY_MIN = 15;   // px: text this big (with a letter or digit in it) uses Doto
+  const DISPLAY_SCALE = 1.12; // Doto reads a little small next to Chakra Petch
   const C = {
     white: '#e8f4ff',
     cyan: '#7fe8ff',
@@ -56,6 +60,8 @@
 
   function init() {
     buildLogo();
+    // canvas text doesn't trigger font loading on its own
+    try { for (const f of ['300 12px "Chakra Petch"', '400 12px "Chakra Petch"', '500 12px "Chakra Petch"', '800 16px "Doto"']) document.fonts.load(f); } catch (e) { /* no FontFace API */ }
     try {
       const s = window.localStorage && parseFloat(window.localStorage.getItem('reverb.sens'));
       if (s > 0 && R.settings) R.settings.sens = clamp(s, SENS_MIN, SENS_MAX);
@@ -79,9 +85,12 @@
 
   // ---------------- helpers ----------------
   function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
-  function font(size, weight) { return (weight || '300') + ' ' + size + 'px ' + FONT; }
+  function font(size, weight, s) {
+    if (size >= DISPLAY_MIN && /[A-Za-z0-9]/.test(s || '')) return '800 ' + Math.round(size * DISPLAY_SCALE) + 'px ' + DISPLAY;
+    return (weight || '400') + ' ' + size + 'px ' + FONT;
+  }
   function text(ctx, s, x, y, size, color, align, alpha, spacing, weight) {
-    ctx.font = font(size, weight);
+    ctx.font = font(size, weight, s);
     ctx.textAlign = align || 'left';
     ctx.textBaseline = 'middle';
     ctx.globalAlpha = alpha == null ? 1 : alpha;
@@ -95,7 +104,7 @@
     } else ctx.fillText(s, x, y);
     ctx.globalAlpha = 1;
   }
-  function textW(ctx, s, size, weight) { ctx.font = font(size, weight); return ctx.measureText(s).width; }
+  function textW(ctx, s, size, weight) { ctx.font = font(size, weight, s); return ctx.measureText(s).width; }
   function line(ctx, x0, y0, x1, y1) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
   function dot(ctx, x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
   function overlay(ctx, a) { ctx.globalAlpha = 1; ctx.fillStyle = 'rgba(0,0,0,' + a + ')'; ctx.fillRect(0, 0, R.screen.w, R.screen.h); }
@@ -145,6 +154,7 @@
   function handleInput(G) {
     const I = input();
     const st = G.state;
+    if (R.net && R.net.overlayOpen) { if (R.input) R.input.lockOnClick = false; U.dragging = null; return; }
     const m = I.mouse || { x: 0, y: 0, down: [], clicked: [] };
     const over = hitHot(m.x, m.y);
     const menuish = st === 'menu' || st === 'over' || st === 'paused';
@@ -173,11 +183,12 @@
       if (I.pressed('Equal') || I.pressed('NumpadAdd')) setSens(sens() + SENS_STEP);
     }
     if ((st === 'paused' || st === 'over') && I.pressed('KeyQ')) G.toMenu && G.toMenu();
+    if (st === 'paused' && I.pressed('KeyX') && R.net && R.net.inMatch && R.net.isHost()) R.net.endMatch();
 
     // pointer lock on click: not when clicking a control, nor during the post-match click guard
     if (R.input) {
       if (st === 'playing' || st === 'dead') R.input.lockOnClick = !R.input.locked;
-      else if (st === 'over' && G.stateT <= 1.2) R.input.lockOnClick = false;
+      else if (st === 'over' && (G.stateT <= 1.2 || (R.net && R.net.active))) R.input.lockOnClick = false;
       else R.input.lockOnClick = !over;
     }
   }
@@ -278,8 +289,7 @@
     const compact = H < 560;
     const logo = drawLogo(ctx, W / 2, H * (compact ? 0.17 : 0.22), Math.min(W * 0.62, 640));
     let y = H * (compact ? 0.17 : 0.22) + logo.h / 2 + 26;
-    text(ctx, 'every sound is light', W / 2, y, 13, C.dim, 'center', 1, 5);
-    y += compact ? 46 : 64;
+    y += compact ? 40 : 54;
     text(ctx, 'MAP', W / 2, y - 22, 10, C.dim, 'center', 1, 3);
     drawArrowSelector(ctx, W / 2, y, G.mapName ? G.mapName().toUpperCase() : 'MAP',
       () => G.setMap && G.setMap(G.mapIndex - 1), () => G.setMap && G.setMap(G.mapIndex + 1));
@@ -288,8 +298,28 @@
     y += compact ? 32 : 44;
     y += drawControls(ctx, W / 2, y, 0.9) + (compact ? 14 : 26);
     const pulse = 0.55 + 0.45 * Math.sin(U.t * 2.6);
-    text(ctx, 'CLICK TO PLAY', W / 2, Math.min(y, H - 44), 16, C.white, 'center', pulse, 6, '400');
+    const online = !!(R.net && R.net.available());
+    const playY = Math.min(y, H - (online ? 76 : 44));
+    text(ctx, 'CLICK TO PLAY', W / 2, playY, 16, C.white, 'center', pulse, 6, '400');
+    if (online) drawOnlineButtons(ctx, W / 2, playY + 34);
     text(ctx, 'you vs 5 — first to ' + (G.killLimit || 15) + ' kills — headphones on', W / 2, H - 18, 10, C.faint, 'center', 1, 2);
+  }
+
+  // HOST ONLINE · JOIN WITH CODE (open the lobby overlay in net.js)
+  function drawOnlineButtons(ctx, cx, y) {
+    const m = input().mouse || { x: -1, y: -1 };
+    const items = [['HOST ONLINE', () => R.net.openHost()], ['JOIN WITH CODE', () => R.net.openJoin()]];
+    const gap = 46, ws = items.map(([s]) => textW(ctx, s, 12, '400') + s.length * 3);
+    let x = cx - (ws[0] + ws[1] + gap) / 2;
+    items.forEach(([s, fn], i) => {
+      const w = ws[i], hov = m.x > x - 8 && m.x < x + w + 8 && Math.abs(m.y - y) < 14;
+      text(ctx, s, x + w / 2, y, 12, hov ? C.white : C.cyan, 'center', hov ? 1 : 0.75, 3, '400');
+      ctx.strokeStyle = hov ? C.white : C.cyan; ctx.globalAlpha = hov ? 0.8 : 0.3; ctx.lineWidth = 1;
+      line(ctx, x, y + 11, x + w, y + 11); ctx.globalAlpha = 1;
+      hot(x - 8, y - 14, w + 16, 28, fn);
+      if (i === 0) { text(ctx, '·', x + w + gap / 2, y, 12, C.faint, 'center', 1); }
+      x += w + gap;
+    });
   }
 
   // ---------------- HUD ----------------
@@ -528,6 +558,7 @@
   function drawDeath(ctx, G) {
     const W = R.screen.w, H = R.screen.h, P = R.player;
     overlay(ctx, 0.3);
+    if (P && P.netWaiting) { text(ctx, 'JOINING THE MATCH', W / 2, H * 0.42, 13, C.cyan, 'center', 0.6 + 0.4 * Math.sin(U.t * 4), 6); return; }
     const d = G.lastDeath || {};
     const k = d.killer && d.killer !== P ? d.killer : null;
     const y = H * 0.36;
@@ -556,7 +587,10 @@
     drawSensSlider(ctx, W / 2, y);
     y += 40;
     y += drawControls(ctx, W / 2, y, 0.85) + 24;
-    text(ctx, 'Q  —  quit to menu', W / 2, y, 11, C.dim, 'center', 1, 2);
+    const net = R.net && R.net.active ? R.net : null;
+    text(ctx, net ? 'Q  —  leave the room' : 'Q  —  quit to menu', W / 2, y, 11, C.dim, 'center', 1, 2);
+    if (net && net.isHost()) text(ctx, 'X  —  end the match for everyone', W / 2, y + 20, 11, C.dim, 'center', 1, 2);
+    if (net) text(ctx, 'ONLINE · ROOM ' + net.code + ' · ' + Math.round(net.rtt || 0) + ' MS  —  the match keeps going while you\'re paused', W / 2, H - 40, 10, C.cyan, 'center', 0.7, 2);
     text(ctx, (G.mapName ? G.mapName().toUpperCase() : '') + '  ·  ' + fmtTime(G.timeLeft || 0) + ' left', W / 2, H - 22, 10, C.faint, 'center', 1, 2);
   }
 
@@ -586,11 +620,14 @@
       text(ctx, k, x, y + 20, 8, C.dim, 'center', 1, 2);
     });
     y += 60;
-    drawArrowSelector(ctx, W / 2, y, G.mapName ? G.mapName().toUpperCase() : 'MAP',
-      () => G.setMap && G.setMap(G.mapIndex - 1), () => G.setMap && G.setMap(G.mapIndex + 1));
-    y += 40;
+    const online = !!(R.net && R.net.active);
+    if (!online) {
+      drawArrowSelector(ctx, W / 2, y, G.mapName ? G.mapName().toUpperCase() : 'MAP',
+        () => G.setMap && G.setMap(G.mapIndex - 1), () => G.setMap && G.setMap(G.mapIndex + 1));
+      y += 40;
+    }
     const ready = (G.stateT || 0) > 1.2;
-    text(ctx, 'CLICK TO PLAY AGAIN', W / 2, Math.min(y, H - 42), 15, C.white, 'center', ready ? 0.55 + 0.45 * Math.sin(U.t * 2.6) : 0.2, 6, '400');
-    text(ctx, 'Q  —  menu', W / 2, H - 18, 10, C.faint, 'center', 1, 2);
+    text(ctx, online ? 'CLICK FOR THE LOBBY' : 'CLICK TO PLAY AGAIN', W / 2, Math.min(y, H - 42), 15, C.white, 'center', ready ? 0.55 + 0.45 * Math.sin(U.t * 2.6) : 0.2, 6, '400');
+    text(ctx, online ? 'Q  —  leave the room' : 'Q  —  menu', W / 2, H - 18, 10, C.faint, 'center', 1, 2);
   }
 })();

@@ -1,0 +1,23 @@
+{
+  // REVERB multiplayer server. `npm run dev` for local, `npm run deploy` to publish.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "reverb-mp",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  // served only from our own domain; the account's workers.dev URL is switched off
+  "routes": [{ "pattern": "reverb-api.patrickglover.io", "custom_domain": true }],
+  "workers_dev": false,
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOMS", "class_name": "Room" },
+      { "name": "STATS", "class_name": "Stats" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room", "Stats"] }],
+  "observability": { "enabled": true },
+  "vars": {
+    // origins allowed to create/join rooms ("null" = the game opened from file://)
+    "ALLOWED_ORIGINS": "https://patrickglover.io,http://localhost:8000,http://127.0.0.1:8000,null"
+  }
+  // secret: ADMIN_TOKEN  (wrangler secret put ADMIN_TOKEN; locally in .dev.vars)
+}

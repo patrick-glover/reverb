@@ -37,6 +37,8 @@
     lastDeath: null,    // {killer, weapon, headshot, t} of the local player's most recent death
     requireLock: true,  // set false to run the match without pointer lock (tests / automation)
     botCount: 5,
+    humans: null,       // multiplayer server: remote player actors to put in the match (instead of R.player)
+    rules: {},          // multiplayer: {killLimit, matchTime} override the defaults
     stats: null,
     _lockLost: 0,
 
@@ -68,13 +70,16 @@
     },
 
     start(mapIndex) {
+      // online: matches are started by the room's host; "play again" goes back to the lobby
+      if (R.net && R.net.active && !R.net._starting) { R.net.backToLobby(); return; }
       if (mapIndex != null) G.setMap(mapIndex);
       const mapDef = R.maps && R.maps[G.mapIndex];
       const player = R.player || null;
 
-      // actors: keep only the local player object
+      // actors: keep only the local player object (or the server's remote players)
       R.actors.length = 0;
       if (player) R.actors.push(player);
+      if (G.humans) for (const h of G.humans) R.actors.push(h);
 
       // world
       let built = null;
@@ -103,8 +108,9 @@
       for (const a of order) spawnActor(a, true);
 
       G.killFeed.length = 0;
+      G.matchTime = G.rules.matchTime || MATCH_TIME;
       G.timeLeft = G.matchTime;
-      G.killLimit = KILL_LIMIT;
+      G.killLimit = G.rules.killLimit || KILL_LIMIT;
       G.time = 0;
       G.winner = null;
       G.lastDeath = null;
@@ -119,9 +125,13 @@
     update(dt) {
       G.stateT += dt;
       const s = G.state;
-      if (s === 'playing' || s === 'dead') {
-        simulate(dt);
+      const online = !!(R.net && R.net.inMatch);
+      if (s === 'playing' || s === 'dead' || (online && s === 'paused')) {
+        // online the room keeps going while you're paused
+        if (online) simulateOnline(dt); else simulate(dt);
         if (has('body', 'update')) safe('body.update', () => R.body.update(dt));
+      }
+      if (G.state === 'playing' || G.state === 'dead') {
         // pointer lock watchdog (the 'lock' event covers the normal Esc case)
         if (G.requireLock && R.input && !R.input.locked) {
           G._lockLost += dt;
@@ -144,6 +154,7 @@
       setState(R.player && !R.player.alive ? 'dead' : 'playing');
     },
     toMenu() {
+      if (R.net && R.net.active) R.net.leave(); // leaving the menu means leaving the room
       if (R.input && R.input.locked) R.input.exitLock();
       for (const a of R.actors) if (a.isBot) a.alive = false;
       setState('menu');
@@ -288,6 +299,22 @@
     let maxK = 0;
     for (const a of R.actors) if (a.kills > maxK) maxK = a.kills;
     if (maxK >= G.killLimit || G.timeLeft <= 0) G.endMatch();
+  }
+
+  // online: the room simulates the match. Locally: own movement and cooldowns, then R.net applies the room's
+  // snapshots and events and sends our state.
+  function simulateOnline(dt) {
+    G.time += dt;
+    const P = R.player;
+    if (P && P.alive && G.state === 'playing' && typeof P.update === 'function') safe('player.update', () => P.update(dt));
+    if (has('weapons', 'update')) safe('weapons.update', () => R.weapons.update(dt));
+    if (P && !P.alive && P.respawnT > 0) P.respawnT = Math.max(0, P.respawnT - dt);
+    safe('net.update', () => R.net.update(dt));
+    if (P) {
+      if (!P.alive && G.state === 'playing') setState('dead');
+      else if (P.alive && G.state === 'dead') setState('playing');
+    }
+    G.timeLeft = Math.max(0, G.timeLeft - dt); // corrected by every snapshot
   }
 
   function updatePickups(dt) {

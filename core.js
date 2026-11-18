@@ -116,7 +116,9 @@
   };
   if (typeof window.addEventListener === 'function' && typeof document !== 'undefined') {
     const BLOCK = new Set(['Space', 'Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyF', 'KeyQ']);
+    const typing = (e) => { const t = e.target && e.target.tagName; return t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA'; };
     window.addEventListener('keydown', (e) => {
+      if (typing(e)) return; // lobby name/code fields
       if (BLOCK.has(e.code) || (R.input.locked && e.code.startsWith('Control'))) e.preventDefault();
       if (!keys.has(e.code)) { pressed.add(e.code); anyPress = true; }
       keys.add(e.code);
@@ -469,7 +471,7 @@
     }
     window.addEventListener('resize', resize);
     resize();
-    for (const n of ['audio', 'echo', 'view', 'weapons', 'player', 'bots', 'game', 'ui']) {
+    for (const n of ['audio', 'echo', 'view', 'weapons', 'player', 'bots', 'game', 'ui', 'net']) {
       const m = R[n];
       if (!m) { console.error('[boot] missing R.' + n); continue; }
       if (typeof m.init === 'function') { try { m.init(); } catch (e) { console.error('[boot] init ' + n, e); } }

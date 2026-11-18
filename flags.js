@@ -5,7 +5,7 @@
 (function () {
   'use strict';
   const R = (window.R = window.R || {});
-  R.VERSION = '0.5.0';
+  R.VERSION = '0.6.0-dev';
 
   // ---- registry -------------------------------------------------------------------------------------
   // type 'bool' | 'num'. apply(v) runs at boot and on every change (for flags that set a module constant).

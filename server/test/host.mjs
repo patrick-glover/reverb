@@ -1,0 +1,24 @@
+// Host controls: end the match early, then close the room. node test/host.mjs [http://localhost:8787]
+const BASE = process.argv[2] || 'http://localhost:8787', O = { headers: { Origin: 'http://localhost:8000' } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let fails = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) fails++; };
+const cl = (code, name) => { const ws = new WebSocket(`${BASE.replace(/^http/, 'ws')}/api/rooms/${code}/ws?name=${name}&uid=t-${name}&v=1`, O);
+  const c = { ws, over: null, lobby: null, closed: null, send: (o) => ws.send(JSON.stringify(o)) };
+  ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.t === 'over') c.over = m; if (m.t === 'lobby') c.lobby = m; };
+  ws.onclose = (e) => (c.closed = { code: e.code, reason: e.reason });
+  c.open = new Promise((r) => (ws.onopen = r)); return c; };
+const { code } = await (await fetch(BASE + '/api/rooms', { method: 'POST', ...O })).json();
+const H = cl(code, 'Host'); await H.open; await sleep(150);
+const G = cl(code, 'Guest'); await G.open; await sleep(150);
+G.send({ t: 'end' }); G.send({ t: 'close' }); await sleep(200);
+ok(!G.closed && !H.closed, 'guest cannot end or close');
+H.send({ t: 'start' }); await sleep(400);
+H.send({ t: 'end' }); await sleep(400);
+ok(G.over && H.over, 'host ended the match: both got results');
+ok(G.lobby.phase === 'over', 'room in results phase');
+H.send({ t: 'close' }); await sleep(400);
+ok(G.closed && G.closed.code === 4002 && /host closed/.test(G.closed.reason), 'guest sent out: ' + JSON.stringify(G.closed));
+ok(H.closed, 'host disconnected too');
+const info = await (await fetch(BASE + '/api/rooms/' + code)).json();
+ok(!info.open, 'room is closed');
+console.log(fails ? fails + ' FAILED' : 'all passed'); process.exit(fails ? 1 : 0);
