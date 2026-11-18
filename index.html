@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Reverb</title>
 <script>
-  // the room server only accepts https://patrickglover.io; an http:// link would make hosting and joining fail
-  if (location.protocol === 'http:' && /(^|\.)patrickglover\.io$/.test(location.hostname)) location.replace('https:' + location.href.slice(5));
+  // the room server only accepts the https origins; an http:// link would make hosting and joining fail
+  if (location.protocol === 'http:' && /(^|\.)(playreverb\.com|patrickglover\.io)$/.test(location.hostname)) location.replace('https:' + location.href.slice(5));
 </script>
 <link rel="stylesheet" href="vendor/fonts.css?v=344bd83d">
 <style>
@@ -28,7 +28,7 @@
 <script src="player.js?v=b34f5564"></script>
 <script src="bots.js?v=9a229d97"></script>
 <script src="game.js?v=93921c2b"></script>
-<script src="net.js?v=c20e3531"></script>
+<script src="net.js?v=8943871f"></script>
 <script src="ui.js?v=23e05c10"></script>
 <script>R.boot();</script>
 </body>

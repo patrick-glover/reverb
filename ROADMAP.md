@@ -1,10 +1,10 @@
 # Roadmap
 
-Current: **v0.6.0-dev**, live at patrickglover.io/reverb (GitHub Pages from `main`).
+Current: **v0.6.0-dev**, live at playreverb.com (GitHub Pages from `main`).
 
 ## Multiplayer (0.6.0-dev, live)
 
-Room codes on a Cloudflare Worker (`reverb-api.patrickglover.io`), one Durable Object per room running the
+Room codes on a Cloudflare Worker (`api.playreverb.com`), one Durable Object per room running the
 match headless. Details, protocol and the scaling plan are in `docs/MULTIPLAYER.md`. Server changes: `npm run deploy`
 in `server/` (restarts live rooms).
 

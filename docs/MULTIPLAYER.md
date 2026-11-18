@@ -102,9 +102,10 @@ node test/rejoin.mjs   # seat held 30 s after a drop: same cid, actor, score and
 
 1. `cd server && npx wrangler login` (once).
 2. `npx wrangler secret put ADMIN_TOKEN` (any long random string; it unlocks `/admin`).
-3. `npm run deploy`. Live at `https://reverb-api.patrickglover.io` (console: `/admin`; the token is in `server/.admin-token`, not in git).
+3. `npm run deploy`. Live at `https://api.playreverb.com` (console: `/admin`; the token is in `server/.admin-token`, not in git).
 4. Put that URL in `PROD_SERVER` at the top of `net.js` and push `main`. Until then the live site hides the online buttons.
-5. `ALLOWED_ORIGINS` in `wrangler.jsonc` must include the site's origin (`https://patrickglover.io` already is).
+5. `ALLOWED_ORIGINS` in `wrangler.jsonc` must include the site's origin (`https://playreverb.com` and `www.` are; `https://patrickglover.io` and the old
+   `reverb-api.patrickglover.io` route are kept for tabs opened before the move, and can go later).
 
 Before pushing `main`, run `node tools/stamp.js`: it puts a content hash on every script and stylesheet URL in
 `index.html`, so browsers never mix cached and new files after an update (Pages caches for 10 minutes).

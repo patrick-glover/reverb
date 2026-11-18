@@ -9,8 +9,8 @@
   const R = (window.R = window.R || {});
 
   const PROTOCOL = 1;
-  // Set after deploying server/ (npm run deploy prints the URL). Empty = online buttons hidden on the live site.
-  const PROD_SERVER = 'https://reverb-api.patrickglover.io';
+  // the room server (server/, a Cloudflare Worker); localhost and file:// use the local dev server instead
+  const PROD_SERVER = 'https://api.playreverb.com';
   const SEND_HZ = 20;
   const KEEPALIVE = 0.25;  // s: resend unchanged movement this often
   const REJOIN_FOR = 25000; // ms to keep trying after a drop (the room holds the seat 30 s)

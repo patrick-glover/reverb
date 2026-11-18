@@ -5,7 +5,12 @@
   "main": "src/index.js",
   "compatibility_date": "2026-11-01",
   // served only from our own domain; the account's workers.dev URL is switched off
-  "routes": [{ "pattern": "reverb-api.patrickglover.io", "custom_domain": true }],
+  // api.playreverb.com is the server; reverb-api.patrickglover.io stays for a while so tabs opened before the move
+  // to playreverb.com keep working (remove it, and https://patrickglover.io below, once nobody can be on the old page)
+  "routes": [
+    { "pattern": "api.playreverb.com", "custom_domain": true },
+    { "pattern": "reverb-api.patrickglover.io", "custom_domain": true }
+  ],
   "workers_dev": false,
   "durable_objects": {
     "bindings": [
@@ -17,7 +22,7 @@
   "observability": { "enabled": true },
   "vars": {
     // origins allowed to create/join rooms ("null" = the game opened from file://)
-    "ALLOWED_ORIGINS": "https://patrickglover.io,http://localhost:8000,http://127.0.0.1:8000,null"
+    "ALLOWED_ORIGINS": "https://playreverb.com,https://www.playreverb.com,https://patrickglover.io,http://localhost:8000,http://127.0.0.1:8000,null"
   }
   // secret: ADMIN_TOKEN  (wrangler secret put ADMIN_TOKEN; locally in .dev.vars)
 }
