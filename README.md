@@ -53,6 +53,8 @@ Plain browser JS, global `R` namespace, three.js r149 only for drawing the point
 | `audio.js` | procedural SFX, HRTF panning, occlusion, convolution reverb |
 | `game.js` / `ui.js` | match flow, respawns, pickups, HUD with damage-direction arc |
 
+`ROADMAP.md` has the plan (multiplayer next) and backlog. `tools/sim.js` runs a headless bot match for checking changes.
+
 `SPEC.md` is the design document and the contract each module was written against.
 
 Built with Claude Code: one Opus 5.5 orchestrator wrote the spec and core, and six Opus 5.5 agents built the modules in parallel.
