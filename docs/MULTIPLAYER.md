@@ -14,6 +14,7 @@ Cloudflare: the site's records are DNS-only and point at GitHub Pages, which iss
 | Deploy server | `cd server && npm run deploy` (restarts every live room: deploy when it's quiet) |
 | Check a server | `cd server && npm run smoke` (local by default; `npm run smoke -- https://api.playreverb.com` for live) |
 | Costs | `node tools/cost-model.js` |
+| Traffic alerts | ntfy push when live players pass 3, 10, 25, 50, 100… or rooms pass 5, 20, 50… (urgent if rooms outnumber players). Topic in `server/.ntfy-topic`, set as the `NTFY_TOPIC` secret; subscribe to it in the ntfy app. `wrangler secret delete NTFY_TOPIC` turns alerts off |
 | Spend safety | Cloudflare dashboard: Durable Objects spending limit and a billing notification. **Not set up yet** |
 
 More detail in [Monitoring](#monitoring) and [Costs and scaling](#costs-and-scaling).

@@ -678,6 +678,31 @@ function sanitizeSettings(s) {
 // ---------------------------------------------------------------------------------------------------------
 const LIVE_TTL = 35000; // a room that hasn't beaten in this long is gone
 
+// ntfy push alerts (secret NTFY_TOPIC; no topic, no alerts). Checked once a minute while anything is live: one push
+// each time live players or rooms climb past a new level. A level re-arms once the count falls to half of it.
+// Many rooms with few players in them is the abuse case (open sockets holding rooms), so that push is urgent.
+const ALERT_LEVELS = { players: [3, 10, 25, 50, 100, 250, 500, 1000, 2500], rooms: [5, 20, 50, 100, 250, 500, 1000, 2500] };
+export function alertCheck(armed, t) {
+  const out = [];
+  for (const k of ['players', 'rooms']) {
+    const L = ALERT_LEVELS[k];
+    let cur = armed[k] || 0;
+    while (cur > 0 && t[k] <= cur / 2) cur = L[L.indexOf(cur) - 1] || 0;
+    let hit = 0;
+    for (const l of L) if (t[k] >= l) hit = l;
+    if (hit > cur) { out.push({ k, level: hit }); cur = hit; }
+    armed[k] = cur;
+  }
+  return out;
+}
+async function ntfy(env, title, msg, urgent) {
+  if (!env.NTFY_TOPIC) return;
+  await fetch('https://ntfy.sh/' + env.NTFY_TOPIC, {
+    method: 'POST', body: msg,
+    headers: { Title: title, Priority: urgent ? 'urgent' : 'default', Tags: urgent ? 'warning' : 'video_game', Click: 'https://api.playreverb.com/admin' },
+  }).catch((e) => log({ evt: 'ntfy_failed', err: String(e) }));
+}
+
 export class Stats extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -737,6 +762,17 @@ export class Stats extends DurableObject {
     this.sql.exec(`INSERT OR REPLACE INTO samples (ts, rooms, players, bots) VALUES (?, ?, ?, ?)`, ts, t.rooms, t.players, t.bots);
     this.sql.exec(`DELETE FROM samples WHERE ts < ?`, Date.now() - 14 * 86400000);
     if (t.rooms > 0) await this.ctx.storage.setAlarm(Date.now() + 60000);
+    if (this.env.NTFY_TOPIC) {
+      const armed = (await this.ctx.storage.get('alertArmed')) || {};
+      const hits = alertCheck(armed, t);
+      await this.ctx.storage.put('alertArmed', armed);
+      if (hits.length) {
+        const abuse = t.rooms >= 20 && t.rooms > t.players;
+        const what = hits.map((h) => (h.k === 'players' ? `${t.players} playing (passed ${h.level})` : `${t.rooms} rooms open (passed ${h.level})`)).join(', ');
+        await ntfy(this.env, abuse ? 'REVERB: rooms piling up' : 'REVERB traffic', `${what}. Now: ${t.players} players, ${t.rooms} rooms, ${t.bots} bots.` +
+          (abuse ? ' More rooms than players: check /admin, ROOMS_DISABLED is the kill switch.' : ''), abuse);
+      }
+    }
   }
 
   async summary() {
