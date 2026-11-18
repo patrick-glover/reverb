@@ -15,7 +15,8 @@ Cloudflare: the site's records are DNS-only and point at GitHub Pages, which iss
 | Check a server | `cd server && npm run smoke` (local by default; `npm run smoke -- https://api.playreverb.com` for live) |
 | Costs | `node tools/cost-model.js` |
 | Traffic alerts | ntfy push when live players pass 3, 10, 25, 50, 100… or rooms pass 5, 20, 50… (urgent if rooms outnumber players). Topic in `server/.ntfy-topic`, set as the `NTFY_TOPIC` secret; subscribe to it in the ntfy app. `wrangler secret delete NTFY_TOPIC` turns alerts off |
-| Spend safety | Cloudflare dashboard: Durable Objects spending limit and a billing notification. **Not set up yet** |
+| Idle rooms | Closed automatically: a match ends after 3 min with no human moving or acting, a room closes after 10 min of nobody doing anything (`MATCH_IDLE_MS`, `LOBBY_IDLE_MS` in `server/src/index.js`) |
+| Spend safety | Free plan today: no bill possible, online play just stops at the daily allowance until 00:00 UTC. On the Paid plan, set Billing → Spend limits for Workers and Durable Objects, plus a billing notification |
 
 More detail in [Monitoring](#monitoring) and [Costs and scaling](#costs-and-scaling).
 
@@ -182,9 +183,9 @@ saving at scale (see `ROADMAP.md`).
 
 ### What breaks first, in order
 
-1. **Spend from abuse.** Nothing closes an idle room yet, and nothing rate-limits creating rooms. One held room costs
-   $0.0058 an hour; a script holding 10,000 costs $58 an hour. Set the Durable Objects spending limit and billing
-   alerts in the dashboard, use `ROOMS_DISABLED` if a bill runs away, and close idle rooms with per-IP limits on
+1. **Spend from abuse.** Idle rooms close on their own, but nothing rate-limits creating rooms, so a script that
+   keeps sending movement can still hold them. One held room costs $0.0058 an hour; 10,000 cost $58 an hour on the
+   Paid plan. Set spend limits when you upgrade, use `ROOMS_DISABLED` if a bill runs away, and add per-IP limits on
    create, lookup and connect (Workers Rate Limiting binding; Turnstile on create if bots start making rooms).
 2. **The Stats object is a single point.** Every room beats every 10 s, plus events. Past ~2k live rooms that is a few
    hundred requests/s into one object. Move event counting to Workers Analytics Engine (no single writer, SQL API for

@@ -109,6 +109,10 @@ const MAX_MSGS_PER_SEC = 120;
 // long; the browser comes back with the rejoin key from its welcome message
 const HOLD_MS = 30000;
 const CLAIM_TTL = 120000; // a claimed room with nobody in it stays joinable this long
+// idle rooms (a room bills for every second it's open, and bots keep a match ticking): a match where no human has
+// moved, aimed or acted for MATCH_IDLE_MS ends (results, then the lobby); a room where nobody has done anything for
+// LOBBY_IDLE_MS is closed. Movement keepalives don't count as activity, only changes do.
+const MATCH_IDLE_MS = 3 * 60000, LOBBY_IDLE_MS = 10 * 60000, IDLE_CHECK_MS = 30000;
 // movement: the client owns its position, but it can only spend distance the room has granted it.
 // Budget accrues at a little over sprint speed, so packet rate buys nothing. The cap covers about 0.9 s of sprinting
 // so a connection that stalls and then delivers a burst is followed in full (the old check allowed an 8 m hop too).
@@ -132,6 +136,7 @@ export class Room extends DurableObject {
     this.claimedAt = 0;
     this.sim = null;
     this.timer = null;
+    this.idleTimer = 0;
     this.events = [];
     this.tick = 0;
     this.lastBeat = 0;
@@ -185,13 +190,14 @@ export class Room extends DurableObject {
       uid: (url.searchParams.get('uid') || '').slice(0, 40),
       color: this.freeColor(), actor: null, joinedAt: Date.now(),
       winStart: Date.now(), winCount: 0, rtt: 0,
-      key: randomKey(), heldTimer: 0,
+      key: randomKey(), heldTimer: 0, lastActive: Date.now(),
     };
     c.name = this.uniqueName(cleanName(url.searchParams.get('name')) || 'Player', c.cid);
     this.clients.set(c.cid, c);
     if (!this.hostCid || !this.clients.has(this.hostCid)) this.hostCid = c.cid;
 
     this.listen(c, ws);
+    if (!this.idleTimer) this.idleTimer = setInterval(() => this.checkIdle(), IDLE_CHECK_MS);
     this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL, rk: c.key });
     if (this.phase === 'playing') this.joinMatch(c);
     this.broadcastLobby();
@@ -225,7 +231,7 @@ export class Room extends DurableObject {
     const old = c.ws;
     c.ws = ws; // set first: the old socket's close event is then ignored
     if (old) try { old.close(4003, 'opened in another tab'); } catch (e) { /* gone */ }
-    c.winStart = Date.now(); c.winCount = 0; c.bye = false;
+    c.winStart = Date.now(); c.winCount = 0; c.bye = false; c.lastActive = Date.now();
     this.listen(c, ws);
     this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL, rk: c.key, rejoin: true });
     if (this.phase === 'playing') {
@@ -236,6 +242,23 @@ export class Room extends DurableObject {
   }
 
   humanCount() { return this.clients.size; }
+  // send everyone out for good (4002: the client shows the reason and doesn't try to rejoin)
+  closeAll(reason) {
+    for (const o of [...this.clients.values()]) { o.bye = true; try { o.ws.close(4002, reason); } catch (e) { /* gone */ } this.onClose(o); }
+  }
+  checkIdle() {
+    if (!this.code || !this.clients.size) return;
+    let last = 0;
+    for (const c of this.clients.values()) if (c.lastActive > last) last = c.lastActive;
+    const idle = Date.now() - last;
+    if (this.phase === 'playing' && this.sim && idle > MATCH_IDLE_MS) {
+      log({ evt: 'match_ended_idle', room: this.code, idleSecs: Math.round(idle / 1000) });
+      this.sim.game.endMatch();
+    } else if (this.phase !== 'playing' && idle > LOBBY_IDLE_MS) {
+      log({ evt: 'room_closed_idle', room: this.code, idleSecs: Math.round(idle / 1000) });
+      this.closeAll('the room closed after 10 minutes with nobody playing');
+    }
+  }
   // unique display names in a room (case-insensitive: the HUD upper-cases them); never a bot's name or "YOU"
   uniqueName(name, cid) {
     const taken = new Set(['YOU', 'BOT']);
@@ -272,6 +295,7 @@ export class Room extends DurableObject {
     if (c.actor && this.sim) this.leaveMatch(c);
     if (this.hostCid === c.cid) this.hostCid = this.clients.size ? this.clients.keys().next().value : 0;
     if (!this.clients.size) {
+      clearInterval(this.idleTimer); this.idleTimer = 0;
       this.stopMatch();
       this.phase = 'lobby';
       this.claimedAt = 0; // the code can be reused
@@ -296,6 +320,7 @@ export class Room extends DurableObject {
     let m;
     try { m = JSON.parse(data); } catch (e) { return; }
     if (!m || typeof m.t !== 'string') return;
+    if (m.t !== 'ping' && m.t !== 'rtt' && m.t !== 'st' && m.t !== 'snd') c.lastActive = now; // 'st' counts only when it changes (onState)
     switch (m.t) {
       case 'ping': this.send(c, { t: 'pong', c: m.c }); break;
       case 'bye': c.bye = true; break; // leaving on purpose: no seat to hold when the socket closes
@@ -324,7 +349,7 @@ export class Room extends DurableObject {
       case 'close': // host shuts the room: everyone is sent out (onClose cleans up as each socket goes)
         if (c.cid !== this.hostCid) return;
         log({ evt: 'room_closed_by_host', room: this.code });
-        for (const o of [...this.clients.values()]) { o.bye = true; try { o.ws.close(4002, 'the host closed the room'); } catch (e) { /* gone */ } this.onClose(o); }
+        this.closeAll('the host closed the room');
         break;
       case 'ready': this.onReady(c); break;
       case 'st': this.onState(c, m); break;
@@ -548,6 +573,8 @@ export class Room extends DurableObject {
     // the actor that far toward it, so an honest client that lagged catches up and a cheat stays at sprint speed.
     const t = Date.now(), el = Math.min(1, (t - (a._stAt || t)) / 1000);
     a._stAt = t;
+    const sk = x + ',' + z + ',' + m.yaw + ',' + m.pitch + ',' + m.cr;
+    if (sk !== c.lastSt) { c.lastSt = sk; c.lastActive = t; } // keepalives repeat the same claim: not activity
     a._cx = x; a._cz = z; a._cseq = a.spawnSeq | 0; // the client's own idea of where it is (this life); see onClientSound
     a._budget = Math.min(MOVE_CAP, (a._budget == null ? MOVE_CAP : a._budget) + MOVE_RATE * el);
     // height (jumping, standing on furniture): no higher than a jump above the highest top under them

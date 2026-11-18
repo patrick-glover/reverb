@@ -7,6 +7,9 @@
 - Empty gun (flag `dryFire`): the last round leaves the slide locked back, and the next trigger pull dry-clicks and starts the reload.
 - The pistol's slide cycles back on every shot.
 - Reload progress wheel around the crosshair.
+- Online: idle rooms close. A match ends after 3 minutes with no human moving or acting, and a room closes after 10 minutes of nobody doing anything, with a message saying why.
+- Online: traffic alerts to ntfy (secret `NTFY_TOPIC`) when live players or rooms pass a new level.
+- Online: spread reacts the moment you stop, so a stop-and-shoot isn't judged as moving.
 
 ## 0.6.0-dev
 - Online play with room codes. **HOST ONLINE** makes a 4-character room and an invite link (`?room=CODE`); **JOIN WITH CODE** joins one. The host sets map, max players (2–8), bot fill, bot skill, kill limit and time limit in the lobby. Bots fill empty slots and swap out as people join and leave mid-match.

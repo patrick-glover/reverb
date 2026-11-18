@@ -18,11 +18,12 @@ so the bill follows room-hours, not players.
 
 1. **First playtest with friends.** Pick between lag compensation and the backlog from what they say.
 2. **Lag compensation for shots.** Friends on ~100 ms connections will feel shots that look like hits and miss.
-3. **Close idle rooms, and rate limits** (audit S1). Before sharing the link widely. Today one open socket keeps a
-   room, and up to 7 bots, running forever (about $0.006/hour each; a script holding 10,000 is $58/hour).
-   - Close a room after ~10 minutes in the lobby, and end a match when no human has sent movement for ~2 minutes.
+3. **Rate limits** (audit S1). Before sharing the link widely. Idle rooms now close (a match ends after 3 minutes
+   with no human moving or acting, a room closes after 10 minutes of nobody doing anything), but a script that
+   keeps sending movement can still hold rooms open (about $0.006/hour each; 10,000 is $58/hour on the Paid plan).
    - Per-IP limits on create, lookup and connect (Workers Rate Limiting binding); require an `Origin` in production.
-   - Set the Durable Objects spending limit and billing alerts in the Cloudflare dashboard.
+   - On the Paid plan: set the Workers and Durable Objects spend limits and a billing notification in the dashboard.
+     On the free plan there's no bill; abuse just uses up the day's allowance and online play stops until 00:00 UTC.
 4. **Solo play goes offline.** One human with bots in an online room costs about $0.007 per player-hour; the same
    match offline runs in the browser for nothing. When the host starts with nobody else in the room, offer the
    offline match instead (or require a second human to start), and say so on the HOST ONLINE screen.
