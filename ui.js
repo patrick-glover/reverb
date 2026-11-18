@@ -299,25 +299,27 @@
     y += drawControls(ctx, W / 2, y, 0.9) + (compact ? 14 : 26);
     const pulse = 0.55 + 0.45 * Math.sin(U.t * 2.6);
     const online = !!(R.net && R.net.available());
-    const playY = Math.min(y, H - (online ? 76 : 44));
+    const playY = Math.min(y, H - (online ? 98 : 44));
     text(ctx, 'CLICK TO PLAY', W / 2, playY, 16, C.white, 'center', pulse, 6, '400');
     if (online) drawOnlineButtons(ctx, W / 2, playY + 34);
     text(ctx, 'you vs 5 — first to ' + (G.killLimit || 15) + ' kills — headphones on', W / 2, H - 18, 10, C.faint, 'center', 1, 2);
   }
 
-  // HOST ONLINE · JOIN WITH CODE (open the lobby overlay in net.js)
+  // QUICK PLAY · HOST ONLINE · JOIN WITH CODE (open the lobby overlay in net.js), and "N playing online" when anyone is
   function drawOnlineButtons(ctx, cx, y) {
     const m = input().mouse || { x: -1, y: -1 };
-    const items = [['HOST ONLINE', () => R.net.openHost()], ['JOIN WITH CODE', () => R.net.openJoin()]];
-    const gap = 46, ws = items.map(([s]) => textW(ctx, s, 12, '400') + s.length * 3);
-    let x = cx - (ws[0] + ws[1] + gap) / 2;
+    const items = [['QUICK PLAY', () => R.net.openQuick()], ['HOST ONLINE', () => R.net.openHost()], ['JOIN WITH CODE', () => R.net.openJoin()]];
+    const gap = 40, ws = items.map(([s]) => textW(ctx, s, 12, '400') + s.length * 3);
+    let x = cx - (ws.reduce((t, w) => t + w, 0) + gap * (items.length - 1)) / 2;
+    const on = R.net.online;
+    if (on && on.players > 0) text(ctx, on.players + (on.players === 1 ? ' PLAYER' : ' PLAYERS') + ' ONLINE NOW', cx, y + 24, 10, C.cyan, 'center', 0.55 + 0.25 * Math.sin(U.t * 1.8), 3);
     items.forEach(([s, fn], i) => {
       const w = ws[i], hov = m.x > x - 8 && m.x < x + w + 8 && Math.abs(m.y - y) < 14;
       text(ctx, s, x + w / 2, y, 12, hov ? C.white : C.cyan, 'center', hov ? 1 : 0.75, 3, '400');
       ctx.strokeStyle = hov ? C.white : C.cyan; ctx.globalAlpha = hov ? 0.8 : 0.3; ctx.lineWidth = 1;
       line(ctx, x, y + 11, x + w, y + 11); ctx.globalAlpha = 1;
       hot(x - 8, y - 14, w + 16, 28, fn);
-      if (i === 0) { text(ctx, '·', x + w + gap / 2, y, 12, C.faint, 'center', 1); }
+      if (i < items.length - 1) { text(ctx, '·', x + w + gap / 2, y, 12, C.faint, 'center', 1); }
       x += w + gap;
     });
   }
@@ -642,7 +644,7 @@
       y += 40;
     }
     const ready = (G.stateT || 0) > 1.2;
-    text(ctx, online ? 'CLICK FOR THE LOBBY' : 'CLICK TO PLAY AGAIN', W / 2, Math.min(y, H - 42), 15, C.white, 'center', ready ? 0.55 + 0.45 * Math.sin(U.t * 2.6) : 0.2, 6, '400');
+    text(ctx, online ? (R.net.quick ? 'NEXT MATCH STARTS SOON' : 'CLICK FOR THE LOBBY') : 'CLICK TO PLAY AGAIN', W / 2, Math.min(y, H - 42), 15, C.white, 'center', ready ? 0.55 + 0.45 * Math.sin(U.t * 2.6) : 0.2, 6, '400');
     text(ctx, online ? 'Q  —  leave the room' : 'Q  —  menu', W / 2, H - 18, 10, C.faint, 'center', 1, 2);
   }
 })();

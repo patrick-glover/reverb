@@ -54,6 +54,23 @@ More detail in [Monitoring](#monitoring) and [Costs and scaling](#costs-and-scal
 - **Players join out of play.** A new match (or a mid-match join) holds you out until your first click into the
   game, then you spawn, so the click-to-play screen is never a free kill. After that, pausing does not stop the room.
 
+### Quick play
+
+**QUICK PLAY** on the menu asks `POST /api/quick` for a room. A single `Matcher` object (one for the whole world) keeps
+the public rooms that have a free slot and hands out the fullest one, holding that slot for 10 s so a burst of players
+doesn't all go for the same last seat. With none free, the Worker makes a new public room near the player who asked.
+Public rooms report to the Matcher on every join, leave and 10 s heartbeat; nothing is stored, so after an eviction
+the list rebuilds from the next heartbeats.
+
+A public room has no host and fixed settings (6 players, bots fill the rest, normal skill, 15 kills, 6 min). The first
+player is put straight into a match with 5 bots; later players join mid-match in a bot's slot. After the results the
+next match starts by itself on another map. Instead of ending the match after 3 idle minutes, a public room sends the
+idle player out (with nobody left, it closes). Its code and invite link work like any room's, so friends can follow
+you in. The browser retries quick play twice if the room it got is gone or full.
+
+`GET /api/quick` returns `{players, rooms}` (everyone online, public and private, cached 15 s). The menu shows
+"N PLAYERS ONLINE NOW" from it, only when N > 0.
+
 ### Host settings
 
 The first player in a room is host (it passes on if they leave). In the lobby the host sets: map, max players (2–8),
@@ -89,7 +106,7 @@ Leave, Cancel and the host's Close send `bye`, so their seats are freed at once.
 | down (room → browser) | |
 |---|---|
 | `welcome` | `cid code protocol rk` (rejoin key) `rejoin` (true when an existing seat was taken back) |
-| `lobby` | `phase host settings players[]` (`cid name color rtt away`) |
+| `lobby` | `phase host settings quick players[]` (`cid name color rtt away`); `quick` = a public room (host is 0) |
 | `start` | `map actors[] you poses[] killLimit matchTime` |
 | `roster` | `actors[]` after joins/leaves/bot swaps |
 | `s` (30 Hz) | `tm tl a[] pk e[] me`: actor rows `[id x z yaw pitch vx vz flags kills deaths]`, pickup bits, events, private hp/darts/respawn |
@@ -122,6 +139,8 @@ node test/fill.mjs     # bot fill, mid-match join/leave, full room
 node test/over.mjs     # match end and the return to the lobby (7 hard bots, kill limit 2)
 node test/host.mjs     # host ends the match, host closes the room
 node test/rejoin.mjs   # seat held 30 s after a drop: same cid, actor, score and host role; bye frees it (~35 s)
+node test/quick.mjs    # quick play: straight into a match, no host, matched into the same room, full rooms skipped
+                       # (run on a fresh dev server: leftover quick rooms get matched into)
 ```
 
 ## Deploy
@@ -194,8 +213,8 @@ saving at scale (see `ROADMAP.md`).
    lookup says whether a code is live. Go to 5 or 6 characters.
 4. **Latency.** A room lives near whoever made it. Friends across an ocean will feel ~150 ms; shots are resolved
    without lag compensation. Fine for code-sharing friends; for public play pick the region with `locationHint`.
-5. **Strangers can't play without a code.** If it spreads, it needs quick play: a matchmaker object per region that
-   hands out rooms with free slots.
+5. **One matcher for the world.** Quick play goes through a single `Matcher` object and ignores distance. Past a
+   few hundred public rooms, or with players on several continents, split it per region (pick by `request.cf.continent`).
 6. **Cheating.** Hits, damage, ammo, respawns and pickups are the room's; movement is held to a 7.5 m/s budget and
    forwarded sounds are rate-limited. Two holes remain. Every snapshot carries every actor's exact position, so a
    wallhack is reading `R.actors` in the console (fix: only send an actor while it is near a recent sound). And
@@ -210,7 +229,8 @@ site is on a CDN already.
 
 ## Known gaps
 
-- No kick, no team modes, no spectating, no quick play.
+- No kick, no team modes, no spectating. Quick play is one global pool: no regions yet (rooms are made near the
+  first player, so a later player across an ocean gets their ping).
 - Idle rooms are not closed and nothing is rate-limited yet (see What breaks first).
 - No lag compensation: you hit where the room has the target, not where you saw it.
 - A held seat (30 s after a drop) is out of play: no bot fills it until it expires.

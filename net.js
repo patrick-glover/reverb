@@ -49,7 +49,9 @@
     _starting: false,
     available: () => !!serverBase(),
     isHost: () => !!N.cid && N.cid === N.hostCid,
-    init, update, openHost, openJoin, leave, backToLobby,
+    quick: false,     // this room is a quick play room (no host, matches back to back)
+    online: null,     // {players, rooms} from the server, for the menu's "N playing online"
+    init, update, openHost, openJoin, openQuick, leave, backToLobby,
     endMatch: () => send({ t: 'end' }),       // host: finish the running match now (results, then lobby)
     closeRoom: () => { N._closing = true; send({ t: 'close' }); }, // host: send everyone out and shut the room
   });
@@ -128,6 +130,20 @@
     const t = ticketGet();
     if (t && t.code && t.rk && (!code || code.toUpperCase() === t.code)) { ticket = t; startRejoin(); } // refreshed mid-session
     else if (code && N.available()) openJoin(code);
+    pollOnline();
+  }
+
+  // how many people are playing online, for the menu (only while it's showing, and the tab is visible)
+  let onlineAt = 0;
+  function pollOnline() {
+    const G = R.game;
+    const due = !N.active && G && G.state === 'menu' && !document.hidden && Date.now() - onlineAt > 30000;
+    if (due) {
+      onlineAt = Date.now();
+      fetch(serverBase() + '/api/quick', { signal: timeoutSignal() }).then((r) => r.json())
+        .then((j) => { N.online = j && Number.isFinite(j.players) ? j : null; }, () => { N.online = null; });
+    }
+    setTimeout(pollOnline, 2000);
   }
 
   function act(a, actor) {
@@ -148,6 +164,7 @@
 
   async function createRoom(name) {
     const base = serverBase(), my = ++attempt;
+    N._quickConnecting = false;
     ticket = null; ticketSet(null); rejoinUntil = 0;
     setMsg('creating room…');
     let code;
@@ -160,10 +177,37 @@
     if (my === attempt) connect(code, name);
   }
 
+  // quick play: the server hands out a public room with a free slot, or makes one; a room that turns out to be
+  // gone or full (someone beat us to the last seat) is retried a couple of times
+  let quickTries = 0;
+  async function quickPlay(name, retry) {
+    const my = ++attempt;
+    quickTries = retry ? quickTries + 1 : 0;
+    N._lastForm = 'quick'; N._quickConnecting = false;
+    ticket = null; ticketSet(null); rejoinUntil = 0;
+    setMsg('finding a match…');
+    let code;
+    try {
+      const r = await fetch(serverBase() + '/api/quick', { method: 'POST', signal: timeoutSignal() });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || r.status);
+      code = j.code;
+    } catch (e) { return my === attempt && fail('could not reach the game server (' + (e.message || e) + ')'); }
+    if (my === attempt) { N._quickConnecting = true; connect(code, name); }
+  }
+  const retryQuick = () => {
+    const go = N._quickConnecting && quickTries < 2;
+    N._quickConnecting = false;
+    if (!go) return false;
+    quickPlay(N._connName || myName() || 'Player', true);
+    return true;
+  };
+
   async function joinRoom(code, name) {
     code = String(code || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{4}$/.test(code)) return fail('room codes are 4 letters/numbers');
     const my = ++attempt;
+    N._quickConnecting = false;
     ticket = null; ticketSet(null); rejoinUntil = 0;
     setMsg('looking for ' + code + '…');
     try {
@@ -200,7 +244,12 @@
       dropOut();
       if (N._closing) { N._closing = false; ticket = null; ticketSet(null); hideOverlay(); try { history.replaceState(null, '', location.pathname); } catch (err) { /* ignore */ } return; }
       // 4000+ is the room telling us to go (full, closed, version, flood, opened in another tab): no retry
-      if (e.code >= 4000) { ticket = null; ticketSet(null); rejoinUntil = 0; return fail(e.reason || 'disconnected from the room'); }
+      if (e.code >= 4000) {
+        ticket = null; ticketSet(null); rejoinUntil = 0;
+        if (!was && retryQuick()) return;
+        return fail(e.reason || 'disconnected from the room');
+      }
+      if (!was && retryQuick()) return;
       // otherwise the connection broke (refresh elsewhere, wifi, server restart): take the seat back if we had one
       if (was && ticket) { startRejoin(); return; }
       // refused before welcome (403 origin, 404 room gone, network) arrives as a bare 1006 with no reason
@@ -254,7 +303,7 @@
   function dropOut() {
     const G = R.game;
     const wasMatch = N.inMatch || (G && G.state !== 'menu');
-    N.active = false; N.inMatch = false; N.phase = 'off'; N.code = null; N.cid = 0; N.hostCid = 0; N.players = [];
+    N.active = false; N.inMatch = false; N.phase = 'off'; N.code = null; N.cid = 0; N.hostCid = 0; N.players = []; N.quick = false;
     clearProxies();
     if (G && wasMatch && G.state !== 'menu') G.toMenu();
   }
@@ -269,12 +318,13 @@
       case 'welcome':
         clearTimeout(connectTimer);
         N.active = true; N.cid = m.cid; N.code = m.code; N.error = '';
+        N._quickConnecting = false;
         rejoinUntil = 0;
         if (m.rk) { ticket = { code: m.code, rk: m.rk, name: N._connName || myName() || 'Player' }; ticketSet(ticket); }
         try { history.replaceState(null, '', location.pathname + '?room=' + m.code); } catch (e) { /* ignore */ }
         break;
       case 'lobby':
-        N.phase = m.phase; N.hostCid = m.host; N.settings = m.settings; N.players = m.players;
+        N.phase = m.phase; N.hostCid = m.host; N.settings = m.settings; N.players = m.players; N.quick = !!m.quick;
         if (!N.inMatch && R.game.state !== 'over') { mode = 'lobby'; showOverlay(); }
         render();
         break;
@@ -523,6 +573,8 @@
   function hideOverlay() { if (el) el.style.display = 'none'; N.overlayOpen = false; }
 
   function openHost() { mode = 'host'; N.error = ''; showOverlay(); render(); }
+  // straight in if we know their name; otherwise ask once
+  function openQuick() { N.error = ''; if (myName()) quickPlay(myName()); else { mode = 'quick'; showOverlay(); render(); } }
   function openJoin(code) { mode = 'join'; N.error = ''; N._joinCode = code || ''; showOverlay(); render(); }
   function setMsg(s) { mode = 'msg'; N._msg = s; showOverlay(); render(); }
   function fail(msg) {
@@ -538,16 +590,29 @@
   function render() {
     if (!el || !N.overlayOpen) return;
     let h = '<div class="box">';
-    if (mode === 'host' || mode === 'join') {
+    if (mode === 'host' || mode === 'join' || mode === 'quick') {
       N._lastForm = mode;
-      h += `<h2>${mode === 'host' ? 'HOST ONLINE GAME' : 'JOIN A GAME'}</h2>`;
+      h += `<h2>${mode === 'host' ? 'HOST ONLINE GAME' : mode === 'quick' ? 'QUICK PLAY' : 'JOIN A GAME'}</h2>`;
       h += `<label for="mp_name">Your name</label><input type="text" id="mp_name" maxlength="16" value="${esc(myName())}" placeholder="Player" autocomplete="off">`;
       if (mode === 'join') h += `<label for="mp_code">Room code</label><input type="text" id="mp_code" maxlength="4" value="${esc(N._joinCode || '')}" placeholder="ABCD" autocomplete="off" style="text-transform:uppercase;letter-spacing:.3em">`;
       h += `<div class="err">${esc(N.error)}</div>`;
-      h += `<div class="row"><button id="mp_cancel">Cancel</button><button class="go" id="mp_go">${mode === 'host' ? 'Create room' : 'Join'}</button></div>`;
+      h += `<div class="row"><button id="mp_cancel">Cancel</button><button class="go" id="mp_go">${mode === 'host' ? 'Create room' : mode === 'quick' ? 'Find a match' : 'Join'}</button></div>`;
     } else if (mode === 'msg') {
       h += `<div class="wait">${esc(N._msg)}</div>`;
       h += '<div class="row"><button id="mp_abort">Cancel</button></div>';
+    } else if (mode === 'lobby' && N.quick) {
+      // quick play: no host, no settings; the next match starts by itself
+      h += `<h2>QUICK PLAY</h2><div class="code">${esc(N.code)}</div><div class="sub">friends can join this match with the code, or</div>`;
+      h += `<div class="row" style="margin-top:8px"><button id="mp_copy">Copy invite link</button></div>`;
+      h += `<h3>Players · ${N.players.length}/${+(N.settings || {}).maxPlayers || '?'} · bots fill the rest</h3><ul>`;
+      for (const p of N.players) {
+        const tags = [p.cid === N.cid ? 'you' : '', p.away ? 'reconnecting' : ''].filter(Boolean).join(' · ');
+        h += `<li><span class="sw" style="background:${safeColor(p.color)}"></span>${esc(p.name)} <span class="tag">${tags}</span><span class="rt">${+p.rtt ? Math.round(+p.rtt) + ' ms' : ''}</span></li>`;
+      }
+      h += '</ul>';
+      h += `<div class="err">${esc(N.error)}</div>`;
+      h += `<div class="wait">${N.phase === 'playing' ? 'match in progress, joining…' : 'next match starts in a few seconds…'}</div>`;
+      h += '<div class="row"><button id="mp_leave">Leave</button></div>';
     } else if (mode === 'lobby') {
       const host = N.isHost(), S = N.settings || {}, dis = host && N.phase === 'lobby' ? '' : ' disabled';
       h += `<h2>ROOM</h2><div class="code">${esc(N.code)}</div><div class="sub">share the code, or</div>`;
@@ -595,7 +660,7 @@
       fail('');
     };
     if ($('mp_go')) {
-      const go = () => (mode === 'host' ? createRoom(nameVal()) : joinRoom($('mp_code').value, nameVal()));
+      const go = () => (mode === 'host' ? createRoom(nameVal()) : mode === 'quick' ? quickPlay(nameVal()) : joinRoom($('mp_code').value, nameVal()));
       $('mp_go').onclick = go;
       for (const id of ['mp_name', 'mp_code']) if ($(id)) $(id).onkeydown = (e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape') $('mp_cancel').onclick(); };
       const first = mode === 'join' && !N._joinCode ? $('mp_code') : $('mp_name');

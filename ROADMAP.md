@@ -27,9 +27,9 @@ so the bill follows room-hours, not players.
 4. **Solo play goes offline.** One human with bots in an online room costs about $0.007 per player-hour; the same
    match offline runs in the browser for nothing. When the host starts with nobody else in the room, offer the
    offline match instead (or require a second human to start), and say so on the HOST ONLINE screen.
-5. **Quick play.** A matchmaker object per region hands out rooms with free slots, so strangers can play without a
-   code. It is also the biggest cost lever: from 1 to 6 humans per room, the cost per player-hour drops from $0.0071 to
-   $0.0016.
+5. **Quick play: regions.** Quick play is in (0.7.0-dev): one global matcher hands out public rooms with free slots.
+   Next is a matcher per region so strangers get a nearby room. Fuller rooms are also the biggest cost lever: from 1
+   to 6 humans per room, the cost per player-hour drops from $0.0071 to $0.0016.
 6. **Interest management** (audit S5): only send an actor while it is near a recent sound. Today every snapshot
    carries every position, so a wallhack is reading the console.
 7. **The room generates footsteps from movement**, closing the silent-walk cheat.

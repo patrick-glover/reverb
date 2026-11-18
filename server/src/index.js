@@ -1,6 +1,8 @@
 // REVERB multiplayer server: a Cloudflare Worker with one Durable Object per room (Room) and one for stats (Stats).
 //
 //   POST /api/rooms                 -> {code}            create a room (the creator becomes host when they connect)
+//   POST /api/quick                 -> {code}            quick play: a public room with a free slot (made if none)
+//   GET  /api/quick                 -> {players, rooms}  how many people are in public and private rooms now
 //   GET  /api/rooms/:code           -> {open, players, max, phase}
 //   GET  /api/rooms/:code/ws?name=&uid=   WebSocket into the room
 //   GET  /admin                     monitoring console (asks for ADMIN_TOKEN)
@@ -48,6 +50,25 @@ export default {
       return json({ error: 'could not allocate a room code' }, 503, cors);
     }
 
+    if (p === '/api/quick' && req.method === 'GET') {
+      // summary() fallback: a Stats object still on the previous deploy's code has no playing() yet
+      const st = stats(env);
+      const n = await st.playing().catch(async () => (await st.summary()).live);
+      return json({ players: n.players, rooms: n.rooms }, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
+    }
+    if (p === '/api/quick' && req.method === 'POST') {
+      if (!originOk(origin, env)) return json({ error: 'origin not allowed' }, 403, cors);
+      if (env.ROOMS_DISABLED) return json({ error: 'online play is paused, try again later' }, 503, cors);
+      const found = await matcher(env).find();
+      if (found) return json({ code: found }, 200, cors);
+      // none with room: make one here (a room lives near whoever first touches it, so near this player)
+      for (let tries = 0; tries < 8; tries++) {
+        const code = randomCode();
+        if (await room(env, code).claim(code, true)) { await matcher(env).add(code, QUICK.maxPlayers); return json({ code }, 200, cors); }
+      }
+      return json({ error: 'could not allocate a room code' }, 503, cors);
+    }
+
     const m = p.match(/^\/api\/rooms\/([A-Za-z0-9]{4})(\/ws)?$/);
     if (m) {
       const code = m[1].toUpperCase();
@@ -66,6 +87,7 @@ export default {
 
 const room = (env, code) => env.ROOMS.get(env.ROOMS.idFromName(code));
 const stats = (env) => env.STATS.get(env.STATS.idFromName('global'));
+const matcher = (env) => env.MATCHER.get(env.MATCHER.idFromName('global'));
 
 function randomKey() {
   const b = new Uint8Array(16);
@@ -99,6 +121,8 @@ const log = (o) => console.log(JSON.stringify(o));
 // Room
 // ---------------------------------------------------------------------------------------------------------
 const DEFAULTS = { map: 0, maxPlayers: 6, botFill: true, botSkill: 0.5, killLimit: 15, timeLimit: 6 };
+// quick play rooms: fixed settings, no host, matches back to back on a random map
+const QUICK = { ...DEFAULTS, maxPlayers: 6 };
 const LIMITS = { map: [0, 2], maxPlayers: [2, 8], botSkill: [0, 1], killLimit: [1, 50], timeLimit: [2, 20] };
 const HUMAN_COLORS = ['#7fe8ff', '#8affc1', '#a9b8ff', '#e9f59a', '#ffffff', '#7fb4ff', '#c2ffe9', '#d6c2ff'];
 // sounds a client makes itself and forwards (everything else the room generates)
@@ -142,22 +166,24 @@ export class Room extends DurableObject {
     this.lastBeat = 0;
     this.matchStartedAt = 0;
     this.overAt = 0;
+    this.pub = false;         // quick play room: no host, matches run back to back
   }
 
   // ---- RPC from the Worker
-  async claim(code) {
+  async claim(code, pub) {
     if (this.clients.size || (this.claimedAt && Date.now() - this.claimedAt < CLAIM_TTL)) return false;
     this.code = code;
     this.claimedAt = Date.now();
-    this.settings = { ...DEFAULTS };
+    this.pub = !!pub;
+    this.settings = pub ? { ...QUICK, map: randomMap() } : { ...DEFAULTS };
     this.phase = 'lobby';
-    stats(this.env).event('room_created', code, null, null).catch(() => {});
-    log({ evt: 'room_created', room: code });
+    stats(this.env).event('room_created', code, null, pub ? { quick: true } : null).catch(() => {});
+    log({ evt: 'room_created', room: code, quick: !!pub });
     return true;
   }
   async info() {
     const open = this.isOpen();
-    return { open, players: this.humanCount(), max: this.settings.maxPlayers, phase: this.phase };
+    return { open, players: this.humanCount(), max: this.settings.maxPlayers, phase: this.phase, quick: this.pub };
   }
 
   // live = someone is in it, or it was claimed recently and the creator has yet to connect
@@ -194,12 +220,13 @@ export class Room extends DurableObject {
     };
     c.name = this.uniqueName(cleanName(url.searchParams.get('name')) || 'Player', c.cid);
     this.clients.set(c.cid, c);
-    if (!this.hostCid || !this.clients.has(this.hostCid)) this.hostCid = c.cid;
+    if (!this.pub && (!this.hostCid || !this.clients.has(this.hostCid))) this.hostCid = c.cid;
 
     this.listen(c, ws);
     if (!this.idleTimer) this.idleTimer = setInterval(() => this.checkIdle(), IDLE_CHECK_MS);
     this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL, rk: c.key });
     if (this.phase === 'playing') this.joinMatch(c);
+    else if (this.pub && this.phase === 'lobby') this.startMatch(); // quick play: straight into a match with bots
     this.broadcastLobby();
     stats(this.env).event('player_joined', this.code, c.uid, { name: c.name, humans: this.humanCount() }).catch(() => {});
     log({ evt: 'player_joined', room: this.code, cid: c.cid, name: c.name, humans: this.humanCount() });
@@ -248,6 +275,19 @@ export class Room extends DurableObject {
   }
   checkIdle() {
     if (!this.code || !this.clients.size) return;
+    if (this.pub) {
+      // quick play never stops for one AFK player: they're sent out instead (the match goes on for everyone else,
+      // and with nobody left the room closes)
+      const now = Date.now();
+      for (const c of [...this.clients.values()]) {
+        if (now - c.lastActive <= MATCH_IDLE_MS || !c.ws) continue;
+        log({ evt: 'player_removed_idle', room: this.code, cid: c.cid });
+        c.bye = true;
+        try { c.ws.close(4002, 'removed from quick play after 3 minutes without moving'); } catch (e) { /* gone */ }
+        this.onClose(c);
+      }
+      return;
+    }
     let last = 0;
     for (const c of this.clients.values()) if (c.lastActive > last) last = c.lastActive;
     const idle = Date.now() - last;
@@ -280,7 +320,7 @@ export class Room extends DurableObject {
 
   broadcastLobby() {
     this.broadcast({
-      t: 'lobby', code: this.code, phase: this.phase, host: this.hostCid, settings: this.settings,
+      t: 'lobby', code: this.code, phase: this.phase, host: this.hostCid, settings: this.settings, quick: this.pub,
       players: [...this.clients.values()].map((c) => ({ cid: c.cid, name: c.name, color: c.color, rtt: Math.round(c.rtt), away: c.ws ? 0 : 1 })),
     });
   }
@@ -293,7 +333,7 @@ export class Room extends DurableObject {
     stats(this.env).event('player_left', this.code, c.uid, { name: c.name, secs }).catch(() => {});
     log({ evt: 'player_left', room: this.code, cid: c.cid, secs, humans: this.humanCount() });
     if (c.actor && this.sim) this.leaveMatch(c);
-    if (this.hostCid === c.cid) this.hostCid = this.clients.size ? this.clients.keys().next().value : 0;
+    if (this.hostCid === c.cid) this.hostCid = this.clients.size && !this.pub ? this.clients.keys().next().value : 0;
     if (!this.clients.size) {
       clearInterval(this.idleTimer); this.idleTimer = 0;
       this.stopMatch();
@@ -302,6 +342,8 @@ export class Room extends DurableObject {
       const code = this.code;
       this.code = null;   // closed: a socket to this code now gets 404 until someone claims it again
       this.settings = { ...DEFAULTS };
+      if (this.pub) matcher(this.env).report(code, null).catch(() => {});
+      this.pub = false;
       stats(this.env).event('room_closed', code, null, null).catch(() => {});
       stats(this.env).beat(code, null).catch(() => {});
       log({ evt: 'room_closed', room: code });
@@ -515,6 +557,12 @@ export class Room extends DurableObject {
     } else if (this.phase === 'over' && Date.now() - this.overAt > OVER_TO_LOBBY * 1000) {
       this.phase = 'lobby';
       this.stopMatch();
+      if (this.pub && this.clients.size && !this.env.ROOMS_DISABLED) {
+        // quick play: the next match starts by itself on another map
+        this.settings.map = randomMap(this.settings.map);
+        this.startMatch();
+        return;
+      }
       this.broadcastLobby();
       this.beat(true);
     }
@@ -667,7 +715,8 @@ export class Room extends DurableObject {
     if (!force && now - this.lastBeat < 10000) return;
     this.lastBeat = now;
     const bots = this.sim ? this.sim.actors.filter((a) => a.isBot).length : 0;
-    stats(this.env).beat(this.code, { humans: this.humanCount(), bots, phase: this.phase, map: this.settings.map }).catch(() => {});
+    stats(this.env).beat(this.code, { humans: this.humanCount(), bots, phase: this.phase, map: this.settings.map, quick: this.pub }).catch(() => {});
+    if (this.pub) matcher(this.env).report(this.code, { humans: this.humanCount(), max: this.settings.maxPlayers, phase: this.phase }).catch(() => {});
   }
 }
 
@@ -676,6 +725,13 @@ function hold(a) {
   a.alive = false; a._dead = true; a.waiting = true; a.respawnT = 1e9; a.health = 100;
 }
 
+// a random map index, different from `not` when there's a choice
+function randomMap(not) {
+  const n = LIMITS.map[1] + 1;
+  let m = Math.floor(Math.random() * n);
+  if (n > 1 && m === not) m = (m + 1 + Math.floor(Math.random() * (n - 1))) % n;
+  return m;
+}
 function rnd(v) { return Math.round((v || 0) * 100) / 100; }
 function r3(v) { return Math.round((v || 0) * 1000) / 1000; }
 function clampNum(v, lo, hi, def) { v = +v; return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : def; }
@@ -769,6 +825,12 @@ export class Stats extends DurableObject {
     await this.ensureAlarm();
   }
 
+  // the menu's "N playing online" line
+  async playing() {
+    const t = this.liveTotals();
+    return { players: t.players, rooms: t.rooms };
+  }
+
   liveTotals() {
     const now = Date.now();
     let rooms = 0, players = 0, bots = 0;
@@ -816,5 +878,44 @@ export class Stats extends DurableObject {
     const recent = this.sql.exec(`SELECT ts, type, room, detail FROM events ORDER BY id DESC LIMIT 100`).toArray();
     const rooms = [...this.live.entries()].map(([code, r]) => ({ code, ...r })).sort((a, b) => b.humans - a.humans);
     return { now, today, live, rooms, uniquePlayers: uniq, active24h: active24, totals, daily, samples, peak: { players: peak.p || 0, rooms: peak.r || 0 }, recent };
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Matcher: one global object that knows which quick play rooms have free slots. Rooms report on every join,
+// leave and heartbeat (about 10 s); a room that stops reporting is dropped. Nothing is stored: after an
+// eviction the list rebuilds itself from the next heartbeats. Each hand-out holds a slot for RESERVE_MS so a
+// burst of players doesn't all get sent to the same last seat.
+// ---------------------------------------------------------------------------------------------------------
+const RESERVE_MS = 10000;
+export class Matcher extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.rooms = new Map(); // code -> {humans, max, phase, updated, held: [ts…]}
+  }
+  // the fullest room that still has a slot (people want people), or null
+  async find() {
+    const now = Date.now();
+    let best = null, bestN = -1;
+    for (const [code, r] of this.rooms) {
+      if (now - r.updated > LIVE_TTL) { this.rooms.delete(code); continue; }
+      r.held = r.held.filter((t) => now - t < RESERVE_MS);
+      const n = r.humans + r.held.length;
+      if (n < r.max && n > bestN) { best = code; bestN = n; }
+    }
+    if (best) this.rooms.get(best).held.push(now);
+    return best;
+  }
+  // a room just made for someone: their slot is held until they connect
+  async add(code, max) {
+    this.rooms.set(code, { humans: 0, max, phase: 'lobby', updated: Date.now(), held: [Date.now()] });
+  }
+  async report(code, info) {
+    if (!info) { this.rooms.delete(code); return; }
+    const r = this.rooms.get(code) || { held: [] };
+    // someone arrived: their reservation (the oldest) is used up
+    if (info.humans > (r.humans || 0)) r.held.splice(0, info.humans - (r.humans || 0));
+    Object.assign(r, info, { updated: Date.now() });
+    this.rooms.set(code, r);
   }
 }

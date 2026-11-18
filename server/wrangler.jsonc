@@ -15,10 +15,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "ROOMS", "class_name": "Room" },
-      { "name": "STATS", "class_name": "Stats" }
+      { "name": "STATS", "class_name": "Stats" },
+      { "name": "MATCHER", "class_name": "Matcher" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room", "Stats"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Room", "Stats"] },
+    { "tag": "v2", "new_sqlite_classes": ["Matcher"] }
+  ],
   "observability": { "enabled": true },
   "vars": {
     // origins allowed to create/join rooms ("null" = the game opened from file://)

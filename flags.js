@@ -27,7 +27,7 @@
       help: 'On: Space jumps (onto low furniture too). Landing is a loud step. Shots in the air are wild.' },
     { key: 'momentum', group: 'Movement', label: 'A little momentum', type: 'bool', def: true, when: 'live',
       help: 'On: you take about 0.2 s to stop. Off: about 0.14 s (pre-0.7).' },
-    { key: 'fireInterval', group: 'Combat', label: 'Pistol fire interval (s)', type: 'num', def: 0.2, min: 0.08, max: 0.5, step: 0.01, when: 'live',
+    { key: 'fireInterval', group: 'Combat', label: 'Pistol fire interval (s)', type: 'num', def: 0.18, min: 0.08, max: 0.5, step: 0.01, when: 'live',
       apply: (v) => R.weapons && (R.weapons.C.FIRE_INTERVAL = v) },
     { key: 'diffraction', group: 'Acoustics', label: 'Sound bends round corners', type: 'bool', def: true, when: 'live',
       help: 'On: loud sounds re-emit dimmer dots from doorways and corners into the rooms beyond, and a sound out of sight is heard (by you and bots) from the opening it comes round. Off: straight rays only, heard from the true position.' },
