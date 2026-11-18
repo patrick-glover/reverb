@@ -8,12 +8,19 @@ Room codes on a Cloudflare Worker (`reverb-api.patrickglover.io`), one Durable O
 match headless. Details, protocol and the scaling plan are in `docs/MULTIPLAYER.md`. Server changes: `npm run deploy`
 in `server/` (restarts live rooms).
 
+Done since 0.6.0-dev went live (2026-11-18): server-side movement budget and sound rate limits, rooms that really
+close, unique names, safer lobby overlay and connect errors, http→https redirect, content-hash cache stamps
+(`node tools/stamp.js` before pushing), reconnect after a refresh or a dropped connection (seat held 30 s), and
+movement sent only when it changes (20 Hz, 4 Hz keepalive).
+
 Next for multiplayer, roughly in order:
+- First playtest with friends; decide between lag compensation and the backlog from what they say.
+- Lag compensation for shots (friends on ~100 ms connections will feel it).
+- Rate limits and idle timeouts on the room server (audit S1: cost, not gameplay; before sharing widely).
+- Interest management: only send an actor while it is near a recent sound (audit S5: today a wallhack is the console).
 - The room generates footsteps from movement (closes the silent-walk cheat).
-- Send movement only when it changes, at 20 Hz (about half the request cost).
-- Reconnect after a refresh; host kick.
+- Host kick or lock room; longer room codes.
 - Quick play (matchmaker per region) and Analytics Engine for stats, if it gets popular.
-- Lag compensation for shots.
 - Bot brain experiments: an external decision model as a slow "commander" over the utility brain (not per tick).
 
 ## Backlog (from the v0.4–0.5 brainstorms)

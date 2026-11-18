@@ -7,7 +7,7 @@ Room codes on a Cloudflare Worker. The game site stays a static page on GitHub P
  ┌──────────────────────┐   POST /api/rooms   ┌─────────────┐
  │ net.js               │ ──────────────────▶ │ Worker      │──┐ idFromName(code)
  │  lobby overlay       │   WebSocket          │ (index.js)  │  ▼
- │  own movement 30 Hz  │ ◀═════════════════▶ │             │ ┌──────────────────────┐
+ │  own movement ≤20 Hz │ ◀═════════════════▶ │             │ ┌──────────────────────┐
  │  echoes, audio, view │   snapshots 30 Hz    └─────────────┘ │ Room DO (one per code)│
  └──────────────────────┘   + sound/hit events                 │  runs the real match: │
                                                                │  bots, hits, respawns │
@@ -20,7 +20,8 @@ Room codes on a Cloudflare Worker. The game site stays a static page on GitHub P
 - **The room runs the match.** `server/build-sim.js` bundles the same game scripts the browser loads (`core`, `props`,
   `maps`, `echo`, `weapons`, `bots`, `game`, …) into `createSim()`, so each room gets its own private `R`.
   A tick costs about 2 ms at 30 Hz with 7 bots (99% of ticks under 4 ms; echo tracing is capped at 3 ms).
-- **Browsers own their movement.** Position, look, velocity, crouch and move mode go up ~30 Hz. The room accepts it
+- **Browsers own their movement.** Position, look, velocity, crouch and move mode go up when they change (at most
+  20 Hz, with a 4 Hz keepalive). The room accepts it
   only as far as a distance budget allows (it builds at 7.5 m/s, capped at 6 m so a stalled connection catches up),
   pushes players out of walls, and works out sprint and crouch from the speed it granted.
 - **Actions are predicted, then resolved by the room.** Fire, knife, dart and reload play their sound and spend
@@ -43,6 +44,14 @@ Leaving: **Leave** in the lobby, **Q** on the pause or results screen, or just c
 **X** on the pause screen (end the match now for everyone: results, then the lobby) and **Close room** in the lobby
 (sends everyone out). A room also closes by itself when its last player leaves.
 
+**Reconnect.** `welcome` carries a rejoin key (`rk`), kept in the tab's `sessionStorage`. A socket that closes without
+a `bye` (refresh, wifi drop, server restart) keeps its seat for 30 s: same cid (so the host stays host), name,
+colour, actor and score, with the actor held out of play. The lobby marks it `away`. The browser retries for 25 s
+(stopping early if the room has closed), connecting with `&rk=`; mid-match it gets a fresh `start` for its old actor
+and clicks back in. A second socket with the same key takes the seat over and the older one is closed with 4003.
+Leave, Cancel and the host's Close send `bye`, so their seats are freed at once. Closes the room sends itself
+(4000+) are never retried.
+
 ### Protocol (JSON, version 1)
 
 | up (browser → room) | |
@@ -51,13 +60,14 @@ Leaving: **Leave** in the lobby, **Q** on the pause or results screen, or just c
 | `snd` | `k x y z m d` own step/sprint/crouch/click |
 | `act` | `a: fire\|knife\|dart\|reload`, `yaw pitch cr` |
 | `ready` | clicked into the match; spawn me |
+| `bye` | leaving on purpose: free my seat when the socket closes (otherwise it is held 30 s) |
 | `settings`, `start`, `end`, `close` | host only |
 | `ping`, `rtt`, `name` | |
 
 | down (room → browser) | |
 |---|---|
-| `welcome` | `cid code` |
-| `lobby` | `phase host settings players[]` |
+| `welcome` | `cid code rk` (rejoin key) `rejoin` (true when an existing seat was taken back) |
+| `lobby` | `phase host settings players[]` (`cid name color rtt away`) |
 | `start` | `map actors[] you poses[] killLimit matchTime` |
 | `roster` | `actors[]` after joins/leaves/bot swaps |
 | `s` (30 Hz) | `tm tl a[] pk e[] me`: actor rows `[id x z yaw pitch vx vz flags kills deaths]`, pickup bits, events, private hp/darts/respawn |
@@ -73,16 +83,19 @@ cd .. && python3 -m http.server 8000
 # open http://localhost:8000 in two windows: HOST ONLINE in one, JOIN WITH CODE (or the invite link) in the other
 ```
 
-On localhost (or `file://`) the game talks to `localhost:8787`; `?server=https://…` overrides it anywhere.
+On localhost (or `file://`) the game talks to `localhost:8787`; there, `?server=https://…` overrides it (ignored on the live site).
 
 Tests (dev server running):
 
 ```sh
 cd server
 node test/smoke.mjs    # protocol: lobby, settings, start, footsteps, knife kill, respawn, stats, host handoff
-node test/client.mjs   # the real browser scripts in node: lobby buttons, spawn-on-click, walk, fire, die, respawn, leave
+node test/client.mjs   # the real browser scripts in node: lobby buttons, spawn-on-click, walk, fire, die, respawn,
+                       # movement send rate, drop and rejoin, leave
 node test/fill.mjs     # bot fill, mid-match join/leave, full room
 node test/over.mjs     # match end and the return to the lobby (7 hard bots, kill limit 2)
+node test/host.mjs     # host ends the match, host closes the room
+node test/rejoin.mjs   # seat held 30 s after a drop: same cid, actor, score and host role; bye frees it (~35 s)
 ```
 
 ## Deploy

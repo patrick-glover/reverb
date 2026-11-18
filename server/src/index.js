@@ -67,6 +67,11 @@ export default {
 const room = (env, code) => env.ROOMS.get(env.ROOMS.idFromName(code));
 const stats = (env) => env.STATS.get(env.STATS.idFromName('global'));
 
+function randomKey() {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
 function randomCode() {
   const b = new Uint8Array(CODE_LEN);
   crypto.getRandomValues(b);
@@ -100,6 +105,9 @@ const HUMAN_COLORS = ['#7fe8ff', '#8affc1', '#a9b8ff', '#e9f59a', '#ffffff', '#7
 const CLIENT_SOUNDS = new Set(['step', 'sprint', 'crouch', 'click']);
 const OVER_TO_LOBBY = 8; // seconds the room stays 'over' before it returns to the lobby
 const MAX_MSGS_PER_SEC = 120;
+// a socket that drops without saying 'bye' (refresh, wifi blip, closed laptop) keeps its seat, actor and score this
+// long; the browser comes back with the rejoin key from its welcome message
+const HOLD_MS = 30000;
 const CLAIM_TTL = 120000; // a claimed room with nobody in it stays joinable this long
 // movement: the client owns its position, but it can only spend distance the room has granted it.
 // Budget accrues at a little over sprint speed, so packet rate buys nothing. The cap covers about 0.9 s of sprinting
@@ -161,8 +169,14 @@ export class Room extends DurableObject {
     const [clientWs, ws] = Object.values(pair);
     ws.accept();
     const reject = (msg) => { ws.send(JSON.stringify({ t: 'error', msg })); ws.close(4000, msg); };
-    if (this.humanCount() >= this.settings.maxPlayers) { reject('room is full'); return new Response(null, { status: 101, webSocket: clientWs }); }
     if (+url.searchParams.get('v') !== PROTOCOL) { reject('game version mismatch, reload the page'); return new Response(null, { status: 101, webSocket: clientWs }); }
+
+    // rejoin: the key matches a seat in this room (held, or one whose old socket we haven't seen die yet)
+    const rk = url.searchParams.get('rk');
+    const back = rk ? [...this.clients.values()].find((o) => o.key === rk) : null;
+    if (back) { this.rebind(back, ws); return new Response(null, { status: 101, webSocket: clientWs }); }
+
+    if (this.humanCount() >= this.settings.maxPlayers) { reject('room is full'); return new Response(null, { status: 101, webSocket: clientWs }); }
 
     const c = {
       cid: this.nextCid++, ws,
@@ -170,22 +184,54 @@ export class Room extends DurableObject {
       uid: (url.searchParams.get('uid') || '').slice(0, 40),
       color: this.freeColor(), actor: null, joinedAt: Date.now(),
       winStart: Date.now(), winCount: 0, rtt: 0,
+      key: randomKey(), heldTimer: 0,
     };
     c.name = this.uniqueName(cleanName(url.searchParams.get('name')) || 'Player', c.cid);
     this.clients.set(c.cid, c);
     if (!this.hostCid || !this.clients.has(this.hostCid)) this.hostCid = c.cid;
 
-    ws.addEventListener('message', (e) => this.onMessage(c, e.data));
-    ws.addEventListener('close', () => this.onClose(c));
-    ws.addEventListener('error', () => this.onClose(c));
-
-    this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL });
+    this.listen(c, ws);
+    this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL, rk: c.key });
     if (this.phase === 'playing') this.joinMatch(c);
     this.broadcastLobby();
     stats(this.env).event('player_joined', this.code, c.uid, { name: c.name, humans: this.humanCount() }).catch(() => {});
     log({ evt: 'player_joined', room: this.code, cid: c.cid, name: c.name, humans: this.humanCount() });
     this.beat(true);
     return new Response(null, { status: 101, webSocket: clientWs });
+  }
+
+  listen(c, ws) {
+    ws.addEventListener('message', (e) => { if (c.ws === ws) this.onMessage(c, e.data); });
+    ws.addEventListener('close', () => this.onSocketGone(c, ws));
+    ws.addEventListener('error', () => this.onSocketGone(c, ws));
+  }
+
+  // a socket closed: a 'bye' (or the room shutting it) means gone for good; anything else holds the seat
+  onSocketGone(c, ws) {
+    if (c.ws !== ws || !this.clients.has(c.cid)) return; // replaced by a rejoin, or already gone
+    if (c.bye) { this.onClose(c); return; }
+    c.ws = null;
+    if (c.actor && this.phase === 'playing') hold(c.actor); // out of play (no free kills) until they click back in
+    clearTimeout(c.heldTimer);
+    c.heldTimer = setTimeout(() => { if (!c.ws) this.onClose(c); }, HOLD_MS);
+    log({ evt: 'player_held', room: this.code, cid: c.cid });
+    this.broadcastLobby();
+  }
+
+  // same seat, new socket: keeps cid (so host stays host), name, colour, actor and score
+  rebind(c, ws) {
+    clearTimeout(c.heldTimer); c.heldTimer = 0;
+    const old = c.ws;
+    c.ws = ws; // set first: the old socket's close event is then ignored
+    if (old) try { old.close(4003, 'opened in another tab'); } catch (e) { /* gone */ }
+    c.winStart = Date.now(); c.winCount = 0; c.bye = false;
+    this.listen(c, ws);
+    this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL, rk: c.key, rejoin: true });
+    if (this.phase === 'playing') {
+      if (c.actor) this.rejoinMatch(c); else this.joinMatch(c);
+    }
+    this.broadcastLobby();
+    log({ evt: 'player_rejoined', room: this.code, cid: c.cid, held: !old });
   }
 
   humanCount() { return this.clients.size; }
@@ -211,13 +257,14 @@ export class Room extends DurableObject {
   broadcastLobby() {
     this.broadcast({
       t: 'lobby', code: this.code, phase: this.phase, host: this.hostCid, settings: this.settings,
-      players: [...this.clients.values()].map((c) => ({ cid: c.cid, name: c.name, color: c.color, rtt: Math.round(c.rtt) })),
+      players: [...this.clients.values()].map((c) => ({ cid: c.cid, name: c.name, color: c.color, rtt: Math.round(c.rtt), away: c.ws ? 0 : 1 })),
     });
   }
 
   onClose(c) {
     if (!this.clients.has(c.cid)) return;
     this.clients.delete(c.cid);
+    clearTimeout(c.heldTimer);
     const secs = Math.round((Date.now() - c.joinedAt) / 1000);
     stats(this.env).event('player_left', this.code, c.uid, { name: c.name, secs }).catch(() => {});
     log({ evt: 'player_left', room: this.code, cid: c.cid, secs, humans: this.humanCount() });
@@ -243,13 +290,14 @@ export class Room extends DurableObject {
     // crude flood guard: a 30 Hz client sends ~35 msgs/s
     const now = Date.now();
     if (now - c.winStart > 1000) { c.winStart = now; c.winCount = 0; }
-    if (++c.winCount > MAX_MSGS_PER_SEC) { if (c.winCount > MAX_MSGS_PER_SEC * 3) c.ws.close(4001, 'too many messages'); return; }
+    if (++c.winCount > MAX_MSGS_PER_SEC) { if (c.winCount > MAX_MSGS_PER_SEC * 3) { c.bye = true; c.ws.close(4001, 'too many messages'); } return; }
     if (typeof data !== 'string' || data.length > 2000) return;
     let m;
     try { m = JSON.parse(data); } catch (e) { return; }
     if (!m || typeof m.t !== 'string') return;
     switch (m.t) {
       case 'ping': this.send(c, { t: 'pong', c: m.c }); break;
+      case 'bye': c.bye = true; break; // leaving on purpose: no seat to hold when the socket closes
       case 'rtt': c.rtt = clampNum(m.ms, 0, 5000, 0); break;
       case 'name': {
         let n = cleanName(m.name);
@@ -275,7 +323,7 @@ export class Room extends DurableObject {
       case 'close': // host shuts the room: everyone is sent out (onClose cleans up as each socket goes)
         if (c.cid !== this.hostCid) return;
         log({ evt: 'room_closed_by_host', room: this.code });
-        for (const o of [...this.clients.values()]) { try { o.ws.close(4002, 'the host closed the room'); } catch (e) { /* gone */ } this.onClose(o); }
+        for (const o of [...this.clients.values()]) { o.bye = true; try { o.ws.close(4002, 'the host closed the room'); } catch (e) { /* gone */ } this.onClose(o); }
         break;
       case 'ready': this.onReady(c); break;
       case 'st': this.onState(c, m); break;
@@ -375,6 +423,15 @@ export class Room extends DurableObject {
     const poses = R.actors.map((x) => [x.id, rnd(x.x), rnd(x.z), rnd(x.yaw), x.spawnSeq || 0]);
     this.send(c, { ...base, you: a.id, poses, timeLeft: G.timeLeft });
     this.sendRoster();
+  }
+
+  // back after a drop, mid-match: the same actor (kills, deaths), held until they click in like a new joiner
+  rejoinMatch(c) {
+    const R = this.sim, G = R.game, a = c.actor;
+    hold(a);
+    const base = { t: 'start', actors: this.roster(), map: this.settings.map, killLimit: G.killLimit, matchTime: G.matchTime };
+    const poses = R.actors.map((x) => [x.id, rnd(x.x), rnd(x.z), rnd(x.yaw), x.spawnSeq || 0]);
+    this.send(c, { ...base, you: a.id, poses, timeLeft: G.timeLeft });
   }
 
   leaveMatch(c) {

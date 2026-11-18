@@ -1,6 +1,6 @@
 // net.js — REVERB online play (R.net). Room codes on a Cloudflare Worker (server/), one Durable Object per room.
 // The room runs the real match (bots, hits, respawns, pickups, clock). This browser owns its own movement and
-// sends it ~30 Hz; shots, knife, darts and reloads are predicted locally (sound, ammo, cooldowns) and resolved by
+// sends it when it changes (up to 20 Hz, 4 Hz keepalive); shots, knife, darts and reloads are predicted locally (sound, ammo, cooldowns) and resolved by
 // the room. Everything else arrives as sound/damage/kill/spawn events and 10-number actor rows, and every
 // client traces its own echoes from the sound events, so dots are never sent over the wire.
 // The lobby is a DOM overlay (text inputs); the menu draws HOST / JOIN buttons that open it.
@@ -11,7 +11,9 @@
   const PROTOCOL = 1;
   // Set after deploying server/ (npm run deploy prints the URL). Empty = online buttons hidden on the live site.
   const PROD_SERVER = 'https://reverb-api.patrickglover.io';
-  const SEND_HZ = 30;
+  const SEND_HZ = 20;
+  const KEEPALIVE = 0.25;  // s: resend unchanged movement this often
+  const REJOIN_FOR = 25000; // ms to keep trying after a drop (the room holds the seat 30 s)
   const INTERP = 0.1;      // remote actors are drawn this far (s) behind the newest snapshot
   const MOVE_MODES = ['idle', 'walk', 'sprint', 'crouch'];
   // own sounds this browser already made itself (the room's copy is skipped)
@@ -22,6 +24,10 @@
   const now = () => performance.now();
   const lsGet = (k) => { try { return window.localStorage.getItem(k); } catch (e) { return null; } };
   const lsSet = (k, v) => { try { window.localStorage.setItem(k, v); } catch (e) { /* ignore */ } };
+  // rejoin ticket for this tab: survives a refresh, not a new tab (sessionStorage)
+  const REJOIN_KEY = 'reverb.rejoin';
+  const ticketGet = () => { try { return JSON.parse(window.sessionStorage.getItem(REJOIN_KEY) || 'null'); } catch (e) { return null; } };
+  const ticketSet = (t) => { try { if (t) window.sessionStorage.setItem(REJOIN_KEY, JSON.stringify(t)); else window.sessionStorage.removeItem(REJOIN_KEY); } catch (e) { /* ignore */ } };
 
   function serverBase() {
     let q = null;
@@ -53,6 +59,9 @@
   let youId = 0;
   let serverT = 0, recvAt = 0; // newest snapshot's server clock and when it arrived
   let sendAcc = 0, pingAcc = 0, rttAcc = 0, sentReady = false;
+  let lastSt = '', lastStAt = 0; // last movement message sent, and when
+  let ticket = null;            // {code, rk, name}: lets this tab take its seat back after a drop or refresh
+  let rejoinUntil = 0;          // while > now, a lost connection retries instead of failing
   let mode = 'menu';          // overlay screen: host | join | lobby | msg
   let el = null;
 
@@ -116,7 +125,9 @@
     // invite links: ?room=CODE opens the join screen
     let code = null;
     try { code = new URLSearchParams(window.location.search).get('room'); } catch (e) { /* ignore */ }
-    if (code && N.available()) openJoin(code);
+    const t = ticketGet();
+    if (t && t.code && t.rk && (!code || code.toUpperCase() === t.code)) { ticket = t; startRejoin(); } // refreshed mid-session
+    else if (code && N.available()) openJoin(code);
   }
 
   function act(a, actor) {
@@ -137,6 +148,7 @@
 
   async function createRoom(name) {
     const base = serverBase(), my = ++attempt;
+    ticket = null; ticketSet(null); rejoinUntil = 0;
     setMsg('creating room…');
     let code;
     try {
@@ -152,6 +164,7 @@
     code = String(code || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{4}$/.test(code)) return fail('room codes are 4 letters/numbers');
     const my = ++attempt;
+    ticket = null; ticketSet(null); rejoinUntil = 0;
     setMsg('looking for ' + code + '…');
     try {
       const r = await fetch(serverBase() + '/api/rooms/' + code, { signal: timeoutSignal() });
@@ -163,10 +176,11 @@
     if (my === attempt) connect(code, name);
   }
 
-  function connect(code, name) {
+  function connect(code, name, rk) {
     closeWs();
+    N._connName = name;
     const url = serverBase().replace(/^http/, 'ws') + '/api/rooms/' + code + '/ws?v=' + PROTOCOL +
-      '&name=' + encodeURIComponent(name) + '&uid=' + encodeURIComponent(uid());
+      '&name=' + encodeURIComponent(name) + '&uid=' + encodeURIComponent(uid()) + (rk ? '&rk=' + encodeURIComponent(rk) : '');
     let ws;
     try { ws = new WebSocket(url); } catch (e) { return fail('could not connect'); }
     N.ws = ws;
@@ -174,7 +188,7 @@
     connectTimer = setTimeout(() => {
       if (N.ws !== ws || N.active) return;
       closeWs();
-      fail('the game server did not answer');
+      lost('the game server did not answer');
     }, CONNECT_TIMEOUT);
     ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (err) { return; } onMessage(m); };
     ws.onclose = (e) => {
@@ -184,11 +198,43 @@
       clearTimeout(connectTimer);
       const was = N.active;
       dropOut();
-      if (N._closing) { N._closing = false; hideOverlay(); try { history.replaceState(null, '', location.pathname); } catch (err) { /* ignore */ } return; }
+      if (N._closing) { N._closing = false; ticket = null; ticketSet(null); hideOverlay(); try { history.replaceState(null, '', location.pathname); } catch (err) { /* ignore */ } return; }
+      // 4000+ is the room telling us to go (full, closed, version, flood, opened in another tab): no retry
+      if (e.code >= 4000) { ticket = null; ticketSet(null); rejoinUntil = 0; return fail(e.reason || 'disconnected from the room'); }
+      // otherwise the connection broke (refresh elsewhere, wifi, server restart): take the seat back if we had one
+      if (was && ticket) { startRejoin(); return; }
       // refused before welcome (403 origin, 404 room gone, network) arrives as a bare 1006 with no reason
-      fail(e.reason || (was ? 'disconnected from the room' : 'could not connect to the room'));
+      lost(e.reason || (was ? 'disconnected from the room' : 'could not connect to the room'));
     };
   }
+  // a connect attempt failed: retry while a rejoin is running, else show the error
+  function lost(msg) {
+    if (ticket && Date.now() < rejoinUntil) {
+      const my = attempt, code = ticket.code;
+      // stop at once if the room itself is gone; keep trying while it's there or the server can't be reached
+      fetch(serverBase() + '/api/rooms/' + code, { signal: timeoutSignal() }).then((r) => r.json()).then((j) => {
+        if (my === attempt && !j.open) { rejoinUntil = 0; lost('room ' + code + ' has closed'); }
+        else if (my === attempt) setTimeout(() => { if (my === attempt && !N.ws) tryRejoin(); }, 1000);
+      }, () => { if (my === attempt) setTimeout(() => { if (my === attempt && !N.ws) tryRejoin(); }, 2000); });
+      return;
+    }
+    if (ticket) {
+      N._joinCode = ticket.code; N._lastForm = 'join';
+      ticket = null; ticketSet(null); rejoinUntil = 0;
+      return fail(msg && /closed/.test(msg) ? msg : 'lost the connection to the room');
+    }
+    fail(msg);
+  }
+  function startRejoin() {
+    rejoinUntil = Date.now() + REJOIN_FOR;
+    attempt++;
+    tryRejoin();
+  }
+  function tryRejoin() {
+    setMsg('connection lost, rejoining ' + ticket.code + '…');
+    connect(ticket.code, ticket.name || myName() || 'Player', ticket.rk);
+  }
+
   function closeWs() {
     clearTimeout(connectTimer);
     const ws = N.ws;
@@ -198,6 +244,8 @@
 
   // leave the room for good (pause menu Q, Leave button)
   function leave() {
+    send({ t: 'bye' }); // gone on purpose: the room frees the seat now instead of holding it
+    ticket = null; ticketSet(null); rejoinUntil = 0;
     closeWs();
     dropOut();
     hideOverlay();
@@ -221,6 +269,8 @@
       case 'welcome':
         clearTimeout(connectTimer);
         N.active = true; N.cid = m.cid; N.code = m.code; N.error = '';
+        rejoinUntil = 0;
+        if (m.rk) { ticket = { code: m.code, rk: m.rk, name: N._connName || myName() || 'Player' }; ticketSet(ticket); }
         try { history.replaceState(null, '', location.pathname + '?room=' + m.code); } catch (e) { /* ignore */ }
         break;
       case 'lobby':
@@ -398,11 +448,14 @@
     const st = R.game.state;
     if (!sentReady && (st === 'playing' || st === 'dead')) { sentReady = true; send({ t: 'ready' }); }
     // own movement to the room
+    // own movement to the room: only when it changed (up to SEND_HZ), plus a slow keepalive
     sendAcc += dt;
     if (sendAcc >= 1 / SEND_HZ && P && P.alive) {
       sendAcc = 0;
-      send({ t: 'st', x: r2(P.x), z: r2(P.z), yaw: r3(P.yaw), pitch: r3(P.pitch), vx: r2(P.vx), vz: r2(P.vz),
-        cr: P.crouch ? 1 : 0, mm: Math.max(0, MOVE_MODES.indexOf(P.moveMode)), sq: P.spawnSeq || 0 });
+      const st = { t: 'st', x: r2(P.x), z: r2(P.z), yaw: r3(P.yaw), pitch: r3(P.pitch), vx: r2(P.vx), vz: r2(P.vz),
+        cr: P.crouch ? 1 : 0, mm: Math.max(0, MOVE_MODES.indexOf(P.moveMode)), sq: P.spawnSeq || 0 };
+      const key = JSON.stringify(st), t = now();
+      if (key !== lastSt || t - lastStAt > KEEPALIVE * 1000) { send(st); lastSt = key; lastStAt = t; }
     }
     pingTick(dt);
   }
@@ -500,7 +553,7 @@
       h += `<div class="row" style="margin-top:8px"><button id="mp_copy">Copy invite link</button></div>`;
       h += `<h3>Players · ${N.players.length}/${+S.maxPlayers || '?'}</h3><ul>`;
       for (const p of N.players) {
-        const tags = [p.cid === N.hostCid ? 'host' : '', p.cid === N.cid ? 'you' : ''].filter(Boolean).join(' · ');
+        const tags = [p.cid === N.hostCid ? 'host' : '', p.cid === N.cid ? 'you' : '', p.away ? 'reconnecting' : ''].filter(Boolean).join(' · ');
         h += `<li><span class="sw" style="background:${safeColor(p.color)}"></span>${esc(p.name)} <span class="tag">${tags}</span><span class="rt">${+p.rtt ? Math.round(+p.rtt) + ' ms' : ''}</span></li>`;
       }
       h += '</ul>';
@@ -534,7 +587,12 @@
     const nameVal = () => { const v = ($('mp_name').value || '').trim().slice(0, 16) || 'Player'; lsSet('reverb.name', v); return v; };
     if ($('mp_cancel')) $('mp_cancel').onclick = () => { hideOverlay(); try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignore */ } };
     // stop a host/join in progress and go back to the form
-    if ($('mp_abort')) $('mp_abort').onclick = () => { attempt++; closeWs(); dropOut(); fail(''); };
+    if ($('mp_abort')) $('mp_abort').onclick = () => {
+      attempt++; send({ t: 'bye' }); closeWs(); dropOut();
+      if (ticket) { N._joinCode = ticket.code; N._lastForm = 'join'; }
+      ticket = null; ticketSet(null); rejoinUntil = 0;
+      fail('');
+    };
     if ($('mp_go')) {
       const go = () => (mode === 'host' ? createRoom(nameVal()) : joinRoom($('mp_code').value, nameVal()));
       $('mp_go').onclick = go;

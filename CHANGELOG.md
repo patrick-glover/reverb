@@ -10,6 +10,8 @@
 - The "every sound is light" tagline is gone from the menu.
 - Typing in text fields no longer triggers game keys.
 - Online hardening: the room limits movement and forwarded sounds to what a real player can do, a room that empties is closed for good, the host can't restart during results, and names stay unique in a room. Joining or hosting that fails now shows an error with a way back instead of hanging.
+- Reconnect: refresh the page or lose your connection mid-match and you get your seat, score and host role back (the room holds it for 30 s). The lobby shows who is reconnecting.
+- Movement goes to the room only when it changes (up to 20 Hz, down from a steady 30), roughly halving the server's message bill.
 - See `docs/MULTIPLAYER.md` for the protocol, deploying and the scaling plan.
 
 ## 0.5.0

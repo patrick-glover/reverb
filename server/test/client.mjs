@@ -28,6 +28,10 @@ globalThis.document = {
 globalThis.location = { search: '', hostname: 'localhost', protocol: 'http:', pathname: '/', origin: 'http://localhost:8000' };
 globalThis.history = { replaceState() {} };
 const store = {}; globalThis.localStorage = { getItem: (k) => store[k] ?? null, setItem: (k, v) => (store[k] = String(v)) };
+const sess = {}; globalThis.sessionStorage = { getItem: (k) => sess[k] ?? null, setItem: (k, v) => (sess[k] = String(v)), removeItem: (k) => delete sess[k] };
+// count outgoing movement messages
+let stSent = 0; const wsSend = WebSocket.prototype.send;
+WebSocket.prototype.send = function (d) { if (typeof d === 'string' && d.startsWith('{"t":"st"')) stSent++; return wsSend.call(this, d); };
 globalThis.requestAnimationFrame = () => 0;
 const errs = []; const ce = console.error; console.error = (...a) => { errs.push(a.map(String).join(' ')); };
 for (const f of ['flags', 'core', 'body', 'props', 'maps', 'echo', 'weapons', 'player', 'bots', 'game', 'net']) {
@@ -115,10 +119,32 @@ ok(rook.kills === 1 && P.deaths === 1, 'scores from snapshots (Rook ' + rook.kil
 await sleep(3500);
 ok(P.alive && G.state === 'playing', 'respawned by the room');
 
+// ---- movement goes up only when it changes
+stSent = 0; await sleep(1000);
+ok(stSent >= 2 && stSent <= 6, 'standing still: ' + stSent + ' movement messages in 1 s (keepalive ~4)');
+key('KeyW', true); stSent = 0; await sleep(1000); key('KeyW', false);
+ok(stSent >= 12 && stSent <= 22, 'walking: ' + stSent + ' movement messages in 1 s (up to 20)');
+
+// ---- connection drops (no bye): the browser takes the same seat back
+const ticket = JSON.parse(sess['reverb.rejoin'] || 'null');
+ok(ticket && ticket.code === N.code && ticket.rk, 'rejoin ticket kept for this tab');
+const myId = P.netId || null, deaths0 = P.deaths, cid0 = N.cid;
+N.ws.close(); // as if the network dropped: we did not ask for it through leave()
+let sawRejoin = false;
+for (let i = 0; i < 100 && !sawRejoin; i++) { sawRejoin = !!N._msg && /rejoining/.test(N._msg); await sleep(5); }
+ok(sawRejoin, 'shows "rejoining" after a drop');
+for (let i = 0; i < 60 && !N.inMatch; i++) await sleep(50);
+ok(N.active && N.inMatch && N.cid === cid0, 'rejoined the same seat (cid ' + N.cid + ')');
+R.input.locked = true; G.resume();
+for (let i = 0; i < 60 && !P.alive; i++) await sleep(50);
+await sleep(200);
+ok(P.alive && P.deaths === deaths0, 'back in play with the same score (deaths ' + P.deaths + ')');
+
 // ---- leave
 G.pause(); G.toMenu();
 await sleep(300);
 ok(!N.active && G.state === 'menu', 'Q from pause leaves the room');
+ok(!sess['reverb.rejoin'], 'leaving clears the rejoin ticket');
 ws.close();
 running = false;
 ok(errs.length === 0, 'no console errors' + (errs.length ? ': ' + errs.slice(0, 3).join(' | ') : ''));

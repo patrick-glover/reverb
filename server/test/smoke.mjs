@@ -87,9 +87,9 @@ const sj = st.status === 200 ? await st.json() : null;
 ok(sj && sj.live.players >= 2, 'stats: live players ' + (sj && sj.live.players) + ', unique ' + (sj && sj.uniquePlayers));
 ok((await fetch(BASE + '/api/admin/stats')).status === 401, 'stats need the token');
 
-A.ws.close(); await sleep(300);
+A.send({ t: 'bye' }); A.ws.close(); await sleep(300); // Leave (a bare close holds the seat 30 s)
 ok(B.lobby.host === B.cid, 'host passes to B when A leaves');
-B.ws.close(); await sleep(300);
+B.send({ t: 'bye' }); B.ws.close(); await sleep(300);
 const info2 = await (await fetch(BASE + '/api/rooms/' + code)).json();
 ok(!info2.open, 'room closes when empty');
 console.log(fails ? fails + ' FAILED' : 'all passed');

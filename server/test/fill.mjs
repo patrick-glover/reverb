@@ -20,12 +20,12 @@ const D = cl(code, 'Dee'); await D.open; await sleep(300);
 const E = cl(code, 'Eve'); await E.open; await sleep(300);
 ok(A.roster.length === 4 && bots(A) === 0, '4 humans, 0 bots');
 ok(E.ws.readyState === 3 || E.lobby == null, 'fifth player turned away (room full)');
-D.ws.close(); await sleep(400);
+D.send({ t: 'bye' }); D.ws.close(); await sleep(400); // Leave (a bare close holds the seat 30 s)
 ok(A.roster.length === 4 && bots(A) === 1, 'a leaver is replaced by a bot');
 // let bots play a bit; make sure the room keeps ticking with bots shooting humans who stand still
 await sleep(4000);
 ok(A.last && A.last.a.length === 4, 'snapshots still flowing with bots');
 console.log('     scores:', A.last.a.map((r) => r[8] + '/' + r[9]).join(' '));
-for (const c of [A, B, C]) c.ws.close();
+for (const c of [A, B, C]) { c.send({ t: 'bye' }); c.ws.close(); }
 await sleep(300);
 console.log(fails ? fails + ' FAILED' : 'all passed'); process.exit(fails ? 1 : 0);
