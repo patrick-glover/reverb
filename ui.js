@@ -370,6 +370,14 @@
       ctx.strokeStyle = C.cyan; ctx.globalAlpha = 0.5; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(cx, cy, 20, -Math.PI / 2, -Math.PI / 2 + f * Math.PI * 2); ctx.stroke();
     }
+    // reload wheel: faint track, white fill sweeping clockwise from the top
+    const w = P.wpn;
+    if (w && w.reloadT > 0) {
+      const f = clamp(1 - w.reloadT / (w.reloadTime || 1.5), 0, 1);
+      ctx.lineWidth = 2; ctx.strokeStyle = C.white;
+      ctx.globalAlpha = 0.15; ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 0.8; ctx.beginPath(); ctx.arc(cx, cy, 13, -Math.PI / 2, -Math.PI / 2 + f * Math.PI * 2); ctx.stroke();
+    }
     // hit marker
     const pm = typeof P.hitMarkerT === 'number' ? P.hitMarkerT : typeof P.lastHitMarker === 'number' && P.lastHitMarker < 1 ? P.lastHitMarker : 0;
     const pk = typeof P.killMarkerT === 'number' ? P.killMarkerT : 0;
