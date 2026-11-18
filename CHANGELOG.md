@@ -6,7 +6,7 @@
 - A little momentum (flag `momentum`): with no keys held you coast to a stop in about 0.2 s instead of 0.14 s. Pressing the opposite key still stops you fast.
 - Empty gun (flag `dryFire`): the last round leaves the slide locked back, and the next trigger pull dry-clicks and starts the reload.
 - The pistol's slide cycles back on every shot.
-- Pistol fires about 10% faster: 0.18 s between shots (was 0.2), for bots too.
+- Pistol fires about a third faster: 0.15 s between shots (was 0.2), for bots too.
 - Reload progress wheel around the crosshair.
 - Online: idle rooms close. A match ends after 3 minutes with no human moving or acting, and a room closes after 10 minutes of nobody doing anything, with a message saying why.
 - Online: **QUICK PLAY** on the menu. No code needed: you're put into a public match that has a free slot, or a new one with bots, and you're playing in seconds. Public rooms have no host, run match after match on rotating maps, and send idle players out instead of stopping. Their invite links work, so friends can follow you in.

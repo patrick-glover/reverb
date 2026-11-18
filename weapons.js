@@ -7,7 +7,7 @@
   const R = (window.R = window.R || {});
 
   const C = {
-    DMG: 34, HEAD_MULT: 2.4, FIRE_INTERVAL: 0.18, MAG: 12, RELOAD: 1.5, SPREAD_DEG: 0.6, SPRINT_SPREAD_MULT: 3,
+    DMG: 34, HEAD_MULT: 2.4, FIRE_INTERVAL: 0.15, MAG: 12, RELOAD: 1.5, SPREAD_DEG: 0.6, SPRINT_SPREAD_MULT: 3,
     RANGE: 120,
     // csSpread flag: inaccuracy (degrees, cone half-angle) builds from movement speed, being in the air and recent
     // shots, Counter-Strike style. Standing still and tapping is accurate; running and spamming is not.
