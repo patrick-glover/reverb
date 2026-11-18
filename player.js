@@ -152,10 +152,17 @@
     if (I.pressed('KeyE')) W.click(a);
     if (I.pressed('KeyR')) W.reload(a);
     const mouse = I.mouse || { down: [], clicked: [] };
-    if (live && (mouse.down[0] || mouse.clicked[0])) {
+    // The click that starts/resumes play (menu, pause, respawn) must not fire: after any gap in
+    // live updates, each mouse button has to be released once before it can act again.
+    const now = R.time || 0;
+    if (!live || a._lastLiveT == null || now - a._lastLiveT > 0.1) { a._armL = false; a._armR = false; }
+    if (live) a._lastLiveT = now;
+    if (!mouse.down[0] && !mouse.clicked[0]) a._armL = true;
+    if (!mouse.down[2] && !mouse.clicked[2]) a._armR = true;
+    if (live && a._armL && (mouse.down[0] || mouse.clicked[0])) {
       if (W.fire(a)) a.recoil = Math.min(1.5, a.recoil + 1);
     }
-    if ((live && mouse.clicked[2]) || I.pressed('KeyQ')) W.throwDart(a);
+    if ((live && a._armR && mouse.clicked[2]) || I.pressed('KeyQ')) W.throwDart(a);
     if (I.pressed('KeyF') || I.pressed('KeyV')) W.knife(a);
     W.tryPickups(a);
 
