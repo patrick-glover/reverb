@@ -4,28 +4,32 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Reverb</title>
-<link rel="stylesheet" href="vendor/fonts.css">
+<script>
+  // the room server only accepts https://patrickglover.io; an http:// link would make hosting and joining fail
+  if (location.protocol === 'http:' && /(^|\.)patrickglover\.io$/.test(location.hostname)) location.replace('https:' + location.href.slice(5));
+</script>
+<link rel="stylesheet" href="vendor/fonts.css?v=344bd83d">
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: crosshair; }
   #stage canvas { display: block; width: 100%; height: 100%; }
 </style>
 </head>
 <body>
-<script src="vendor/three.min.js"></script>
-<script src="flags.js"></script>
-<script src="core.js"></script>
-<script src="body.js"></script>
-<script src="props.js"></script>
-<script src="maps.js"></script>
-<script src="audio.js"></script>
-<script src="echo.js"></script>
-<script src="view.js"></script>
-<script src="weapons.js"></script>
-<script src="player.js"></script>
-<script src="bots.js"></script>
-<script src="game.js"></script>
-<script src="net.js"></script>
-<script src="ui.js"></script>
+<script src="vendor/three.min.js?v=a13f10ad"></script>
+<script src="flags.js?v=43f3113f"></script>
+<script src="core.js?v=af3a3572"></script>
+<script src="body.js?v=e2409159"></script>
+<script src="props.js?v=8f5b1544"></script>
+<script src="maps.js?v=4fd5daf0"></script>
+<script src="audio.js?v=e067bf8b"></script>
+<script src="echo.js?v=1821a2b8"></script>
+<script src="view.js?v=ec84f73c"></script>
+<script src="weapons.js?v=7e5e13f3"></script>
+<script src="player.js?v=b34f5564"></script>
+<script src="bots.js?v=9a229d97"></script>
+<script src="game.js?v=93921c2b"></script>
+<script src="net.js?v=03fc2818"></script>
+<script src="ui.js?v=23e05c10"></script>
 <script>R.boot();</script>
 </body>
 </html>

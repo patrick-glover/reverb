@@ -9,6 +9,7 @@
 - New type: dot-matrix **Doto** for big text (map name, CLICK TO PLAY, timer, HP, killer names, room code) and **Chakra Petch** for everything else, replacing the system monospace. Both are embedded in `vendor/fonts.css` (SIL OFL) so the game still runs offline from `file://`.
 - The "every sound is light" tagline is gone from the menu.
 - Typing in text fields no longer triggers game keys.
+- Online hardening: the room limits movement and forwarded sounds to what a real player can do, a room that empties is closed for good, the host can't restart during results, and names stay unique in a room. Joining or hosting that fails now shows an error with a way back instead of hanging.
 - See `docs/MULTIPLAYER.md` for the protocol, deploying and the scaling plan.
 
 ## 0.5.0

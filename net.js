@@ -26,9 +26,11 @@
   function serverBase() {
     let q = null;
     try { q = new URLSearchParams(window.location.search).get('server'); } catch (e) { /* ignore */ }
-    if (q) return q.replace(/\/+$/, '');
     const h = window.location.hostname;
-    if (window.location.protocol === 'file:' || h === 'localhost' || h === '127.0.0.1') return 'http://localhost:8787';
+    const local = window.location.protocol === 'file:' || h === 'localhost' || h === '127.0.0.1';
+    // ?server= is a dev override only: on the live site it would let a link point the game at any server
+    if (q && local && /^https?:\/\//i.test(q)) return q.replace(/\/+$/, '');
+    if (local) return 'http://localhost:8787';
     return PROD_SERVER;
   }
 
@@ -128,30 +130,37 @@
   const r3 = (v) => Math.round(v * 1000) / 1000;
 
   // ---------------- connection ----------------
+  // every host/join attempt gets a number; Cancel (or a newer attempt) makes older async steps give up
+  let attempt = 0, connectTimer = 0;
+  const CONNECT_TIMEOUT = 10000;
+  const timeoutSignal = () => { try { return AbortSignal.timeout(CONNECT_TIMEOUT); } catch (e) { return undefined; } };
+
   async function createRoom(name) {
-    const base = serverBase();
+    const base = serverBase(), my = ++attempt;
     setMsg('creating room…');
     let code;
     try {
-      const r = await fetch(base + '/api/rooms', { method: 'POST' });
+      const r = await fetch(base + '/api/rooms', { method: 'POST', signal: timeoutSignal() });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || r.status);
       code = j.code;
-    } catch (e) { return fail('could not reach the game server (' + (e.message || e) + ')'); }
-    connect(code, name);
+    } catch (e) { return my === attempt && fail('could not reach the game server (' + (e.message || e) + ')'); }
+    if (my === attempt) connect(code, name);
   }
 
   async function joinRoom(code, name) {
     code = String(code || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{4}$/.test(code)) return fail('room codes are 4 letters/numbers');
+    const my = ++attempt;
     setMsg('looking for ' + code + '…');
     try {
-      const r = await fetch(serverBase() + '/api/rooms/' + code);
+      const r = await fetch(serverBase() + '/api/rooms/' + code, { signal: timeoutSignal() });
       const j = await r.json();
+      if (my !== attempt) return;
       if (!j.open) return fail('no room called ' + code);
       if (j.players >= j.max) return fail('room ' + code + ' is full');
-    } catch (e) { return fail('could not reach the game server (' + (e.message || e) + ')'); }
-    connect(code, name);
+    } catch (e) { return my === attempt && fail('could not reach the game server (' + (e.message || e) + ')'); }
+    if (my === attempt) connect(code, name);
   }
 
   function connect(code, name) {
@@ -161,17 +170,27 @@
     let ws;
     try { ws = new WebSocket(url); } catch (e) { return fail('could not connect'); }
     N.ws = ws;
+    // no welcome in time (server down, socket hanging): give up rather than sit on "creating room…"
+    connectTimer = setTimeout(() => {
+      if (N.ws !== ws || N.active) return;
+      closeWs();
+      fail('the game server did not answer');
+    }, CONNECT_TIMEOUT);
     ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (err) { return; } onMessage(m); };
     ws.onclose = (e) => {
+      // closes we asked for (closeWs) clear N.ws first, so anything reaching past here was not requested
       if (N.ws !== ws) return;
       N.ws = null;
+      clearTimeout(connectTimer);
       const was = N.active;
       dropOut();
       if (N._closing) { N._closing = false; hideOverlay(); try { history.replaceState(null, '', location.pathname); } catch (err) { /* ignore */ } return; }
-      if (was || e.code >= 4000) fail(e.reason || 'disconnected from the room');
+      // refused before welcome (403 origin, 404 room gone, network) arrives as a bare 1006 with no reason
+      fail(e.reason || (was ? 'disconnected from the room' : 'could not connect to the room'));
     };
   }
   function closeWs() {
+    clearTimeout(connectTimer);
     const ws = N.ws;
     N.ws = null;
     if (ws) try { ws.close(1000); } catch (e) { /* ignore */ }
@@ -200,6 +219,7 @@
   function onMessage(m) {
     switch (m.t) {
       case 'welcome':
+        clearTimeout(connectTimer);
         N.active = true; N.cid = m.cid; N.code = m.code; N.error = '';
         try { history.replaceState(null, '', location.pathname + '?room=' + m.code); } catch (e) { /* ignore */ }
         break;
@@ -458,6 +478,7 @@
   }
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const safeColor = (c) => (/^#[0-9a-f]{3,8}$/i.test(c) ? c : '#ffffff');
   const SKILLS = [[0.25, 'easy'], [0.5, 'normal'], [0.85, 'hard']];
 
   function render() {
@@ -472,14 +493,15 @@
       h += `<div class="row"><button id="mp_cancel">Cancel</button><button class="go" id="mp_go">${mode === 'host' ? 'Create room' : 'Join'}</button></div>`;
     } else if (mode === 'msg') {
       h += `<div class="wait">${esc(N._msg)}</div>`;
+      h += '<div class="row"><button id="mp_abort">Cancel</button></div>';
     } else if (mode === 'lobby') {
       const host = N.isHost(), S = N.settings || {}, dis = host && N.phase === 'lobby' ? '' : ' disabled';
       h += `<h2>ROOM</h2><div class="code">${esc(N.code)}</div><div class="sub">share the code, or</div>`;
       h += `<div class="row" style="margin-top:8px"><button id="mp_copy">Copy invite link</button></div>`;
-      h += `<h3>Players · ${N.players.length}/${S.maxPlayers || '?'}</h3><ul>`;
+      h += `<h3>Players · ${N.players.length}/${+S.maxPlayers || '?'}</h3><ul>`;
       for (const p of N.players) {
         const tags = [p.cid === N.hostCid ? 'host' : '', p.cid === N.cid ? 'you' : ''].filter(Boolean).join(' · ');
-        h += `<li><span class="sw" style="background:${esc(p.color)}"></span>${esc(p.name)} <span class="tag">${tags}</span><span class="rt">${p.rtt ? p.rtt + ' ms' : ''}</span></li>`;
+        h += `<li><span class="sw" style="background:${safeColor(p.color)}"></span>${esc(p.name)} <span class="tag">${tags}</span><span class="rt">${+p.rtt ? Math.round(+p.rtt) + ' ms' : ''}</span></li>`;
       }
       h += '</ul>';
       const maps = (R.maps || []).map((m, i) => `<option value="${i}"${i === S.map ? ' selected' : ''}>${esc(m.name)}</option>`).join('');
@@ -511,6 +533,8 @@
     const $ = (id) => document.getElementById(id);
     const nameVal = () => { const v = ($('mp_name').value || '').trim().slice(0, 16) || 'Player'; lsSet('reverb.name', v); return v; };
     if ($('mp_cancel')) $('mp_cancel').onclick = () => { hideOverlay(); try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignore */ } };
+    // stop a host/join in progress and go back to the form
+    if ($('mp_abort')) $('mp_abort').onclick = () => { attempt++; closeWs(); dropOut(); fail(''); };
     if ($('mp_go')) {
       const go = () => (mode === 'host' ? createRoom(nameVal()) : joinRoom($('mp_code').value, nameVal()));
       $('mp_go').onclick = go;

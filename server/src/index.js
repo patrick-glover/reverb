@@ -100,6 +100,16 @@ const HUMAN_COLORS = ['#7fe8ff', '#8affc1', '#a9b8ff', '#e9f59a', '#ffffff', '#7
 const CLIENT_SOUNDS = new Set(['step', 'sprint', 'crouch', 'click']);
 const OVER_TO_LOBBY = 8; // seconds the room stays 'over' before it returns to the lobby
 const MAX_MSGS_PER_SEC = 120;
+const CLAIM_TTL = 120000; // a claimed room with nobody in it stays joinable this long
+// movement: the client owns its position, but it can only spend distance the room has granted it.
+// Budget accrues at a little over sprint speed, so packet rate buys nothing. The cap covers about 0.9 s of sprinting
+// so a connection that stalls and then delivers a burst is followed in full (the old check allowed an 8 m hop too).
+const MOVE_RATE = 7.5, MOVE_CAP = 6, CROUCH_MAX = 2.6, SPRINT_MIN = 5.5;
+// client-forwarded sounds: token bucket per kind {seconds per token, burst}. click matches CLICK_COOLDOWN (0.55 s);
+// footsteps come once per stride (0.3 s sprinting at the fastest) and may arrive bunched up.
+const SOUND_RATE = { click: [0.5, 1], step: [0.25, 3], sprint: [0.25, 3], crouch: [0.25, 3] };
+const SOUND_MULT = [0.45, 2.0]; // R.FLOOR_MULT range
+const SOUND_REACH = 1.0;        // metres a forwarded sound may sit from where the sender last said it was
 
 export class Room extends DurableObject {
   constructor(ctx, env) {
@@ -122,7 +132,7 @@ export class Room extends DurableObject {
 
   // ---- RPC from the Worker
   async claim(code) {
-    if (this.clients.size || (this.claimedAt && Date.now() - this.claimedAt < 120000)) return false;
+    if (this.clients.size || (this.claimedAt && Date.now() - this.claimedAt < CLAIM_TTL)) return false;
     this.code = code;
     this.claimedAt = Date.now();
     this.settings = { ...DEFAULTS };
@@ -132,18 +142,21 @@ export class Room extends DurableObject {
     return true;
   }
   async info() {
-    const open = !!this.code && (this.clients.size > 0 || Date.now() - this.claimedAt < 120000);
+    const open = this.isOpen();
     return { open, players: this.humanCount(), max: this.settings.maxPlayers, phase: this.phase };
   }
+
+  // live = someone is in it, or it was claimed recently and the creator has yet to connect
+  isOpen() { return !!this.code && (this.clients.size > 0 || Date.now() - this.claimedAt < CLAIM_TTL); }
 
   // ---- WebSocket connect
   async fetch(req) {
     const url = new URL(req.url);
     const code = req.headers.get('X-Room-Code');
-    if (!this.code || this.code !== code) {
-      // never claimed (or evicted since): only allow if this is a fresh claim race; otherwise reject
-      return new Response('no such room', { status: 404 });
-    }
+    // never claimed, closed (last player left), expired claim, or evicted: only POST /api/rooms opens a room
+    if (!this.isOpen() || this.code !== code) return new Response('no such room', { status: 404 });
+    // kill switch: nobody may (re)fill an empty room; people already in a room can still rejoin it
+    if (this.env.ROOMS_DISABLED && !this.clients.size) return new Response('online play is paused', { status: 503 });
     const pair = new WebSocketPair();
     const [clientWs, ws] = Object.values(pair);
     ws.accept();
@@ -153,14 +166,12 @@ export class Room extends DurableObject {
 
     const c = {
       cid: this.nextCid++, ws,
-      name: cleanName(url.searchParams.get('name')) || 'Player',
+      name: 'Player',
       uid: (url.searchParams.get('uid') || '').slice(0, 40),
       color: this.freeColor(), actor: null, joinedAt: Date.now(),
       winStart: Date.now(), winCount: 0, rtt: 0,
     };
-    // unique display names in a room
-    const names = new Set([...this.clients.values()].map((o) => o.name));
-    if (names.has(c.name)) { let i = 2; while (names.has(c.name + i)) i++; c.name = c.name + i; }
+    c.name = this.uniqueName(cleanName(url.searchParams.get('name')) || 'Player', c.cid);
     this.clients.set(c.cid, c);
     if (!this.hostCid || !this.clients.has(this.hostCid)) this.hostCid = c.cid;
 
@@ -178,6 +189,18 @@ export class Room extends DurableObject {
   }
 
   humanCount() { return this.clients.size; }
+  // unique display names in a room (case-insensitive: the HUD upper-cases them); never a bot's name or "YOU"
+  uniqueName(name, cid) {
+    const taken = new Set(['YOU', 'BOT']);
+    for (const o of this.clients.values()) if (o.cid !== cid) taken.add(o.name.toUpperCase());
+    for (const n of botNames()) taken.add(n.toUpperCase());
+    if (this.sim) for (const a of this.sim.actors) if (a.isBot) taken.add(String(a.name).toUpperCase());
+    if (!taken.has(name.toUpperCase())) return name;
+    const stem = name.slice(0, 14);
+    let i = 2;
+    while (taken.has((stem + i).toUpperCase())) i++;
+    return stem + i;
+  }
   freeColor() {
     const used = new Set([...this.clients.values()].map((c) => c.color));
     return HUMAN_COLORS.find((x) => !used.has(x)) || HUMAN_COLORS[0];
@@ -204,9 +227,12 @@ export class Room extends DurableObject {
       this.stopMatch();
       this.phase = 'lobby';
       this.claimedAt = 0; // the code can be reused
-      stats(this.env).event('room_closed', this.code, null, null).catch(() => {});
-      stats(this.env).beat(this.code, null).catch(() => {});
-      log({ evt: 'room_closed', room: this.code });
+      const code = this.code;
+      this.code = null;   // closed: a socket to this code now gets 404 until someone claims it again
+      this.settings = { ...DEFAULTS };
+      stats(this.env).event('room_closed', code, null, null).catch(() => {});
+      stats(this.env).beat(code, null).catch(() => {});
+      log({ evt: 'room_closed', room: code });
       return;
     }
     this.broadcastLobby();
@@ -226,8 +252,9 @@ export class Room extends DurableObject {
       case 'ping': this.send(c, { t: 'pong', c: m.c }); break;
       case 'rtt': c.rtt = clampNum(m.ms, 0, 5000, 0); break;
       case 'name': {
-        const n = cleanName(m.name);
-        if (n) { c.name = n; if (c.actor) c.actor.name = n; this.broadcastLobby(); if (this.sim) this.sendRoster(); }
+        let n = cleanName(m.name);
+        if (n) n = this.uniqueName(n, c.cid);
+        if (n && n !== c.name) { c.name = n; if (c.actor) c.actor.name = n; this.broadcastLobby(); if (this.sim) this.sendRoster(); }
         break;
       }
       case 'settings':
@@ -235,8 +262,9 @@ export class Room extends DurableObject {
         this.settings = sanitizeSettings({ ...this.settings, ...(m.settings || {}) });
         this.broadcastLobby();
         break;
-      case 'start':
-        if (c.cid !== this.hostCid || this.phase === 'playing') return;
+      case 'start': // only from the lobby: during results the old sim is still alive
+        if (c.cid !== this.hostCid || this.phase !== 'lobby') return;
+        if (this.env.ROOMS_DISABLED) { this.send(c, { t: 'error', msg: 'online play is paused, try again later' }); this.broadcastLobby(); return; }
         this.startMatch();
         break;
       case 'end': // host ends the match early: normal results, then the lobby
@@ -458,27 +486,59 @@ export class Room extends DurableObject {
     if ((m.sq | 0) !== (a.spawnSeq | 0)) return; // stale: sent before the client saw its respawn
     const x = +m.x, z = +m.z;
     if (!Number.isFinite(x) || !Number.isFinite(z)) return;
-    // trust the client's movement up to sprint speed (+ slack for packets that bunch up); ignore teleports
+    // trust the client's movement only as far as its distance budget goes (see MOVE_RATE). A longer claim moves
+    // the actor that far toward it, so an honest client that lagged catches up and a cheat stays at sprint speed.
     const t = Date.now(), el = Math.min(1, (t - (a._stAt || t)) / 1000);
     a._stAt = t;
-    if (Math.hypot(x - a.x, z - a.z) <= 7.5 * el + 0.75) {
-      a.x = x; a.z = z;
+    a._cx = x; a._cz = z; a._cseq = a.spawnSeq | 0; // the client's own idea of where it is (this life); see onClientSound
+    a._budget = Math.min(MOVE_CAP, (a._budget == null ? MOVE_CAP : a._budget) + MOVE_RATE * el);
+    const dx = x - a.x, dz = z - a.z, d = Math.hypot(dx, dz);
+    let moved = 0;
+    if (d > 0) {
+      const k = Math.min(1, a._budget / d);
+      const ox = a.x, oz = a.z;
+      a.x += dx * k; a.z += dz * k;
       this.sim.world._resolve(a); // keep them out of walls
+      moved = Math.hypot(a.x - ox, a.z - oz);
+      a._budget -= d * k;
     }
+    // smoothed speed the room actually granted: move mode and crouch come from this, not from the client's say-so
+    a._sd = (a._sd || 0) * 0.7 + moved;
+    a._st = (a._st || 0) * 0.7 + el;
+    const spd = a._st > 0 ? a._sd / a._st : 0;
     a.yaw = clampNum(m.yaw, -10, 10, a.yaw);
     a.pitch = clampNum(m.pitch, -1.5, 1.5, a.pitch);
     a.vx = clampNum(m.vx, -8, 8, 0); a.vz = clampNum(m.vz, -8, 8, 0);
-    a.crouch = !!m.cr;
-    a.moveMode = ['idle', 'walk', 'sprint', 'crouch'][m.mm | 0] || 'idle';
+    a._spd = spd;
+    a.crouch = !!m.cr && spd < CROUCH_MAX; // no small hitbox at running speed
+    let mm = ['idle', 'walk', 'sprint', 'crouch'][m.mm | 0] || 'idle';
+    if (spd > SPRINT_MIN) mm = 'sprint';                 // sprinting is sprinting, whatever the client says
+    else if (mm === 'crouch' && !a.crouch) mm = 'walk';
+    else if (mm === 'idle' && spd > 1) mm = 'walk';
+    a.moveMode = mm;
   }
 
   onClientSound(c, m) {
     const a = c.actor;
     if (!a || this.phase !== 'playing' || !a.alive || !CLIENT_SOUNDS.has(m.k)) return;
     const x = +m.x, y = +m.y, z = +m.z;
-    if (![x, y, z].every(Number.isFinite) || Math.hypot(x - a.x, z - a.z) > 2.5) return;
-    const ex = { mult: clampNum(m.m, 0.3, 2.5, 1) };
-    if (Array.isArray(m.d) && m.d.length === 3 && m.d.every(Number.isFinite)) ex.dir = m.d;
+    if (![x, y, z].every(Number.isFinite)) return;
+    // near where the client last said it was in this life (so a lagging client's steps still count), as long as that
+    // claim is within one movement budget of the room's copy; before its first claim, near the room's copy
+    const fresh = a._cx != null && a._cseq === (a.spawnSeq | 0);
+    const ax = fresh ? a._cx : a.x, az = fresh ? a._cz : a.z;
+    if (Math.hypot(x - ax, z - az) > SOUND_REACH || Math.hypot(ax - a.x, az - a.z) > MOVE_CAP) return;
+    const hasDir = Array.isArray(m.d) && m.d.length === 3 && m.d.every(Number.isFinite);
+    if (m.k === 'click' && !hasDir) return; // a click is a forward cone, never all-round
+    // token bucket per kind: an honest client can't beat the click cooldown or its own stride
+    const [per, burst] = SOUND_RATE[m.k], now = Date.now() / 1000;
+    const b = (c.sndBucket || (c.sndBucket = {}));
+    const s = b[m.k] || (b[m.k] = { tok: burst, at: now });
+    s.tok = Math.min(burst, s.tok + (now - s.at) / per); s.at = now;
+    if (s.tok < 1) return;
+    s.tok -= 1;
+    const ex = { mult: m.k === 'click' ? 1 : clampNum(m.m, SOUND_MULT[0], SOUND_MULT[1], 1) };
+    if (hasDir) ex.dir = m.d;
     this.sim.sound(m.k, x, y, z, a, ex);
   }
 
@@ -487,7 +547,7 @@ export class Room extends DurableObject {
     if (!a || this.phase !== 'playing' || !a.alive) return;
     if (Number.isFinite(m.yaw)) a.yaw = m.yaw;
     if (Number.isFinite(m.pitch)) a.pitch = clampNum(m.pitch, -1.5, 1.5, 0);
-    if (m.cr != null) a.crouch = !!m.cr;
+    if (m.cr != null) a.crouch = !!m.cr && (a._spd || 0) < CROUCH_MAX;
     const W = R.weapons, w = W.ensure(a);
     switch (m.a) {
       case 'fire':
@@ -527,6 +587,12 @@ function hold(a) {
 function rnd(v) { return Math.round((v || 0) * 100) / 100; }
 function r3(v) { return Math.round((v || 0) * 1000) / 1000; }
 function clampNum(v, lo, hi, def) { v = +v; return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : def; }
+// the bots' name list, read once from the game scripts (bots.js) so the two can't drift apart
+let BOT_NAMES = null;
+function botNames() {
+  if (!BOT_NAMES) { try { BOT_NAMES = (createSim().bots.NAMES || []).slice(); } catch (e) { BOT_NAMES = []; } }
+  return BOT_NAMES;
+}
 function cleanName(s) {
   return String(s || '').replace(/[^\p{L}\p{N} _.\-]/gu, '').trim().slice(0, 16);
 }

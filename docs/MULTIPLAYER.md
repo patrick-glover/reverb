@@ -21,7 +21,8 @@ Room codes on a Cloudflare Worker. The game site stays a static page on GitHub P
   `maps`, `echo`, `weapons`, `bots`, `game`, …) into `createSim()`, so each room gets its own private `R`.
   A tick costs about 2 ms at 30 Hz with 7 bots (99% of ticks under 4 ms; echo tracing is capped at 3 ms).
 - **Browsers own their movement.** Position, look, velocity, crouch and move mode go up ~30 Hz. The room accepts it
-  up to sprint speed (+ slack) and pushes players out of walls.
+  only as far as a distance budget allows (it builds at 7.5 m/s, capped at 6 m so a stalled connection catches up),
+  pushes players out of walls, and works out sprint and crouch from the speed it granted.
 - **Actions are predicted, then resolved by the room.** Fire, knife, dart and reload play their sound and spend
   ammo/cooldown locally at once; the room raycasts and deals damage with its own positions.
 - **Sounds, not dots, cross the wire.** Every sound is a small event (`kind, x, y, z, actor, mult, dir`) and each browser
@@ -91,6 +92,10 @@ node test/over.mjs     # match end and the return to the lobby (7 hard bots, kil
 3. `npm run deploy`. Live at `https://reverb-api.patrickglover.io` (console: `/admin`; the token is in `server/.admin-token`, not in git).
 4. Put that URL in `PROD_SERVER` at the top of `net.js` and push `main`. Until then the live site hides the online buttons.
 5. `ALLOWED_ORIGINS` in `wrangler.jsonc` must include the site's origin (`https://patrickglover.io` already is).
+
+Before pushing `main`, run `node tools/stamp.js`: it puts a content hash on every script and stylesheet URL in
+`index.html`, so browsers never mix cached and new files after an update (Pages caches for 10 minutes).
+`node tools/stamp.js --check` fails if a stamp is stale.
 
 Deploying a new Worker version restarts every room, so live matches disconnect. Deploy when it's quiet, and bump
 `PROTOCOL` in `net.js` and `index.js` together when the messages change (old tabs are told to reload).

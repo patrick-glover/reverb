@@ -55,6 +55,7 @@
   const T = (R.bots = {
     skill: 0.5,
     PERS,
+    NAMES,              // the room server keeps humans from taking these
     // global tuning knobs
     tune: {
       hearErr: 1.0,        // multiplier on hearing localisation error
