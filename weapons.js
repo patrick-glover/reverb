@@ -133,6 +133,7 @@
     damage(target, amount, attacker, part, x, y, z, weapon) {
       if (!target || !target.alive || amount <= 0) return 0;
       if (attacker && attacker === target) return 0; // no self-damage
+      if (target === R.player && R.flag && R.flag('godMode')) return 0;
       attacker = attacker || null;
       if (x == null) { x = target.x; y = target.y + 1.2; z = target.z; }
       const dealt = Math.min(target.health, amount);

@@ -11,7 +11,7 @@ You vs 5 bots, free-for-all. The bots are blind too and play by the same rules: 
 ![Warehouse](docs/warehouse.png)
 
 ## Play
-Open `index.html` in Chrome (no build step; three.js loads from a CDN, so you need to be online). Click to capture the mouse. **Headphones strongly recommended**: all audio is HRTF-spatialized with room-sized reverb.
+Open `index.html` in Chrome. No build step and no server: three.js is vendored in `vendor/`, so it runs offline straight from disk. Click to capture the mouse. **Headphones strongly recommended**: all audio is HRTF-spatialized with room-sized reverb.
 
 | Key | Action |
 |---|---|
@@ -25,14 +25,23 @@ Open `index.html` in Chrome (no build step; three.js loads from a CDN, so you ne
 | R | reload |
 | Tab | scoreboard |
 | M | mute |
+| ` | dev flags panel |
 
 Floors matter: carpet muffles your steps, puddles and metal grates make them louder.
+
+## Development
+Version lives in `flags.js` (`R.VERSION`) and changes are logged in `CHANGELOG.md`.
+
+Experimental features sit behind flags so old and new behaviour can be compared in the same build. Press ` in game to open the flags panel; changes save in the browser. To test a specific setup without touching saved settings, add it to the URL: `index.html?flags=stickyDots=0,bots=2,perf=1`. **Copy test URL** in the panel builds that link from your current changes.
+
+To add a flag: add an entry to `DEFS` in `flags.js`, then read it with `R.flag('name')` where the behaviour branches. Flags that set a module constant get an `apply` function instead.
 
 ## How it's built
 Plain browser JS, global `R` namespace, three.js r149 only for drawing the points.
 
 | File | What |
 |---|---|
+| `flags.js` | version, feature flags, dev panel |
 | `core.js` | world (boxes, 3D raycasting, ~0.15 µs/ray), collision, nav grid, sound hearing by walking distance, input, loop |
 | `echo.js` / `view.js` | ray-traced echo simulation (wavefront timing, bounces, lattice-snapped dots, dots that stick to actors) and the WebGL point renderer |
 | `props.js` / `maps.js` | furniture built from thin boxes; Apartment, Office, Warehouse |

@@ -434,6 +434,7 @@
       if (!m) { console.error('[boot] missing R.' + n); continue; }
       if (typeof m.init === 'function') { try { m.init(); } catch (e) { console.error('[boot] init ' + n, e); } }
     }
+    if (R.flags) R.flags.applyAll();
     resize();
     let last = performance.now();
     function frame(now) {

@@ -207,7 +207,9 @@
         const key = ((qx * 73856093) ^ (qy * 19349663) ^ (qz * 83492791) ^ ((a.id | 0) * 40503) ^ ((7 + bounce) * 2654435761)) | 0;
         if (job.seen.has(key)) return;
         job.seen.add(key);
-        addActorDot(a, x, y, z, cr * J, cg * J, cb * J, b2, S);
+        // flag off: freeze the dot where the sound hit instead of following the body
+        if (R.flag && !R.flag('stickyDots')) pushDot(x, y, z, cr * J, cg * J, cb * J, b2, ALIFE, S);
+        else addActorDot(a, x, y, z, cr * J, cg * J, cb * J, b2, S);
       };
       tryPut(h.x, h.y, h.z, I, born);
       // splat the ray footprint over the body so silhouettes read even from sparse rays
