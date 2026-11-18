@@ -1,5 +1,10 @@
 # REVERB — Design Spec & Module Contract
 
+> **Historical.** This is the v0.1 spec the first modules were written against, kept as the design record. The game
+> has moved on: bots now see echo dots that land on bodies, three.js and the fonts are vendored (no CDN),
+> `flags.js`, `body.js` and `net.js` were added (so the load order differs), and online play runs matches on a
+> server (`docs/MULTIPLAYER.md`). Where this file and the code, `README.md` or `docs/MULTIPLAYER.md` disagree, they win.
+
 ## Pitch
 A first-person deathmatch in total darkness. Nothing is ever lit. **Every sound radiates rays** that
 travel outward at a (slowed) speed of sound, and where they strike a surface they leave **glowing dots**

@@ -1,6 +1,22 @@
 # Multiplayer
 
-Room codes on a Cloudflare Worker. The game site stays a static page on GitHub Pages; only the room server is new.
+Room codes on a Cloudflare Worker. The game is a static site on GitHub Pages at `https://playreverb.com`; the room
+server is a Cloudflare Worker at `https://api.playreverb.com`. Both names are in the `playreverb.com` zone on
+Cloudflare: the site's records are DNS-only and point at GitHub Pages, which issues the certificate.
+
+## Ops
+
+| What | How |
+|---|---|
+| Console | https://api.playreverb.com/admin (token in `server/.admin-token`). Local: http://localhost:8787/admin (token in `server/.dev.vars`) |
+| Live logs | `cd server && npm run tail`, or Cloudflare dashboard → Workers → reverb → Logs |
+| Kill switch | `cd server && npx wrangler secret put ROOMS_DISABLED` (any value): no new rooms or matches, running matches finish. `npx wrangler secret delete ROOMS_DISABLED` to turn rooms back on |
+| Deploy server | `cd server && npm run deploy` (restarts every live room: deploy when it's quiet) |
+| Check a server | `cd server && npm run smoke` (local by default; `npm run smoke -- https://api.playreverb.com` for live) |
+| Costs | `node tools/cost-model.js` |
+| Spend safety | Cloudflare dashboard: Durable Objects spending limit and a billing notification. **Not set up yet** |
+
+More detail in [Monitoring](#monitoring) and [Costs and scaling](#costs-and-scaling).
 
 ```
  browser (GitHub Pages)                       Cloudflare
@@ -21,9 +37,12 @@ Room codes on a Cloudflare Worker. The game site stays a static page on GitHub P
   `maps`, `echo`, `weapons`, `bots`, `game`, …) into `createSim()`, so each room gets its own private `R`.
   A tick costs about 2 ms at 30 Hz with 7 bots (99% of ticks under 4 ms; echo tracing is capped at 3 ms).
 - **Browsers own their movement.** Position, look, velocity, crouch and move mode go up when they change (at most
-  20 Hz, with a 4 Hz keepalive). The room accepts it
-  only as far as a distance budget allows (it builds at 7.5 m/s, capped at 6 m so a stalled connection catches up),
-  pushes players out of walls, and works out sprint and crouch from the speed it granted.
+  20 Hz, with a 4 Hz keepalive). The room accepts it only as far as a distance budget allows (it builds at 7.5 m/s,
+  capped at 6 m so a stalled connection catches up), pushes players out of walls, and works out sprint and crouch
+  from the speed it granted.
+- **Forwarded sounds are checked.** Steps and clicks come from the browser, so the room rate-limits them per kind
+  (a click per 0.5 s, steps in bursts of 3 at 0.25 s), keeps them within 1 m of the sender, clamps their loudness to
+  the floor-material range, and drops clicks without a direction.
 - **Actions are predicted, then resolved by the room.** Fire, knife, dart and reload play their sound and spend
   ammo/cooldown locally at once; the room raycasts and deals damage with its own positions.
 - **Sounds, not dots, cross the wire.** Every sound is a small event (`kind, x, y, z, actor, mult, dir`) and each browser
@@ -38,11 +57,12 @@ Room codes on a Cloudflare Worker. The game site stays a static page on GitHub P
 The first player in a room is host (it passes on if they leave). In the lobby the host sets: map, max players (2–8),
 fill empty slots with bots (on/off), bot skill (easy/normal/hard), kill limit, time limit. With bot fill on, a
 mid-match joiner takes a bot's slot and a leaver is replaced by a bot. After a match the room shows results for 8 s,
-then returns to the lobby. Invite links are `…/reverb/?room=CODE`.
+then returns to the lobby. Invite links are `https://playreverb.com/?room=CODE`.
 
-Leaving: **Leave** in the lobby, **Q** on the pause or results screen, or just closing the tab. The host also has
-**X** on the pause screen (end the match now for everyone: results, then the lobby) and **Close room** in the lobby
-(sends everyone out). A room also closes by itself when its last player leaves.
+Leaving: **Leave** in the lobby, or **Q** on the pause or results screen. Closing the tab also works, but the seat is
+held for 30 s first (see Reconnect). The host also has **X** on the pause screen (end the match now for everyone:
+results, then the lobby) and **Close room** in the lobby (sends everyone out). A room closes by itself when its last
+player has gone; the code then returns 404 until `POST /api/rooms` hands it out again.
 
 **Reconnect.** `welcome` carries a rejoin key (`rk`), kept in the tab's `sessionStorage`. A socket that closes without
 a `bye` (refresh, wifi drop, server restart) keeps its seat for 30 s: same cid (so the host stays host), name,
@@ -66,13 +86,17 @@ Leave, Cancel and the host's Close send `bye`, so their seats are freed at once.
 
 | down (room → browser) | |
 |---|---|
-| `welcome` | `cid code rk` (rejoin key) `rejoin` (true when an existing seat was taken back) |
+| `welcome` | `cid code protocol rk` (rejoin key) `rejoin` (true when an existing seat was taken back) |
 | `lobby` | `phase host settings players[]` (`cid name color rtt away`) |
 | `start` | `map actors[] you poses[] killLimit matchTime` |
 | `roster` | `actors[]` after joins/leaves/bot swaps |
 | `s` (30 Hz) | `tm tl a[] pk e[] me`: actor rows `[id x z yaw pitch vx vz flags kills deaths]`, pickup bits, events, private hp/darts/respawn |
-| events in `s.e` | `['s',kind,x,y,z,actor,mult,dir]` sound, `['d',…]` damage, `['k',victim,killer,weapon,hs]` kill, `['sp',id,x,z,yaw,seq]` spawn, `['p',…]` pickup |
+| events in `s.e` | `['s',kind,x,y,z,actor,mult,dir]` sound, `['d',…]` damage, `['k',victim,killer,weapon,hs]` kill, `['sp',id,x,z,yaw,seq]` spawn, `['p',…]` pickup (not read by the browser: pickup state travels in `pk`) |
 | `over` | `ranking winner` |
+| `pong`, `error` | `c` echoed for the RTT; `msg` shown in the overlay |
+
+Close codes from the room: 4000 refused (full, version mismatch), 4001 too many messages, 4002 the host closed the
+room, 4003 the seat was taken over by another tab. The browser never retries these.
 
 ## Run it locally
 
@@ -103,9 +127,11 @@ node test/rejoin.mjs   # seat held 30 s after a drop: same cid, actor, score and
 1. `cd server && npx wrangler login` (once).
 2. `npx wrangler secret put ADMIN_TOKEN` (any long random string; it unlocks `/admin`).
 3. `npm run deploy`. Live at `https://api.playreverb.com` (console: `/admin`; the token is in `server/.admin-token`, not in git).
-4. Put that URL in `PROD_SERVER` at the top of `net.js` and push `main`. Until then the live site hides the online buttons.
-5. `ALLOWED_ORIGINS` in `wrangler.jsonc` must include the site's origin (`https://playreverb.com` and `www.` are; `https://patrickglover.io` and the old
-   `reverb-api.patrickglover.io` route are kept for tabs opened before the move, and can go later).
+4. `PROD_SERVER` at the top of `net.js` is the server's URL; the custom domain is in `routes` in `wrangler.jsonc`
+   (keep `workers_dev: false`).
+5. `ALLOWED_ORIGINS` in `wrangler.jsonc` must include the site's origin (`https://playreverb.com` and `www.` are).
+   `https://patrickglover.io` and the old `reverb-api.patrickglover.io` route are kept for tabs opened before the
+   move to playreverb.com, and can be removed.
 
 Before pushing `main`, run `node tools/stamp.js`: it puts a content hash on every script and stylesheet URL in
 `index.html`, so browsers never mix cached and new files after an update (Pages caches for 10 minutes).
@@ -121,47 +147,58 @@ Deploying a new Worker version restarts every room, so live matches disconnect. 
   table, live room list, last 100 events. Refreshes every 10 s.
 - **Logs**: every room event is one JSON line (`{"evt":"match_started","room":"XVTZ",…}`). `npm run tail` streams them;
   Workers Logs (enabled in `wrangler.jsonc`) keeps them searchable in the dashboard.
-- **Kill switch**: `npx wrangler secret put ROOMS_DISABLED` (any value) stops new rooms; running ones finish.
-  `wrangler secret delete ROOMS_DISABLED` turns it back on.
+- **Kill switch**: `npx wrangler secret put ROOMS_DISABLED` (any value) stops new rooms, refilling empty ones, and
+  new matches; matches already running finish. `wrangler secret delete ROOMS_DISABLED` turns it back on.
 
-## Scaling, in case it goes viral
+## Costs and scaling
 
 ### What it costs
 
-Durable Objects bill wall-clock time while a room is open (128 MB × seconds) plus requests, where incoming WebSocket
-messages count 20:1 and outgoing ones are free ([pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)).
-Paid plan: $5/month includes 400k GB-s and 1M requests, then $12.50 per million GB-s and $0.15 per million requests.
-There is no bandwidth charge.
+The static site costs nothing (GitHub Pages; no bandwidth charges anywhere). The room server is billed on two things
+([pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/), checked 2026-11-18):
 
-| | per hour |
-|---|---|
-| one open room (duration) | 0.125 GB × 3600 s = 450 GB-s ≈ **$0.0056** |
-| one player (≈33 incoming msgs/s → 5,940 billed requests) | ≈ **$0.0009** |
-| a 4-player room | ≈ **$0.009** |
-| 1,000 concurrent players in rooms of 4 (250 rooms) | ≈ **$2.30** |
-| 10,000 concurrent players (2,500 rooms) | ≈ **$23** |
+- **Room time, about 80% of the bill.** A room bills 128 MB for every second it is open: $0.0058 per room-hour.
+  A match ticks at 30 Hz, so a room in play never hibernates.
+- **Incoming messages.** 20 messages are billed as one request ($0.15 per million). A player sends about 18 a second,
+  about $0.0005 per player-hour. Outgoing messages are free.
 
-The **free plan** (100k requests and 13,000 GB-s per day) runs out at about four 4-player room-hours a day, since
-requests are the binding limit. That's enough for a toy demo with friends; move to the $5 plan before posting a link anywhere.
+The Workers Paid plan is $5/month and includes 400k GB-s and 1M requests; the free plan gives 13k GB-s and 100k
+requests a day, and past that online play stops until 00:00 UTC (no bill). `node tools/cost-model.js` prints this
+table; its header lists the assumptions (45-minute sessions, 3 humans per room, `MSGS`, `MINS` and `PER_ROOM`
+change them):
+
+| Popularity | Daily players | Player-hours / month | Rooms at peak | Free plan | Paid plan / month |
+|---|---|---|---|---|---|
+| Friends playtests (5 people, ~8 evenings) | ~1 | 78 | 1 | fits | $5.00 |
+| Small community | 50 | 1.1k | 2 | runs out | $5.45 |
+| Modest hit | 500 | 11.3k | 18 | runs out | $35.70 |
+| Popular | 5,000 | 112.5k | 180 | runs out | $312 |
+| Viral | 50,000 | 1.1M | ~1,800 | runs out | $3,060 |
+
+Because the bill follows room-hours, people per room matters most: per player-hour, a room costs $0.0071 with one
+human, $0.0027 with three and $0.0016 with six. Solo play belongs offline, and quick play (fuller rooms) is the main
+saving at scale (see `ROADMAP.md`).
 
 ### What breaks first, in order
 
-1. **Spend.** Cloudflare has no hard spending cap. Set billing notifications, and use `ROOMS_DISABLED` if a bill runs away.
-2. **Incoming message volume** is most of the request cost. Send state at 20 Hz and only when it changes (an idle or
-   dead player sends nothing): roughly halves it. Binary encoding saves bandwidth, not money.
-3. **The Stats object is a single point.** Every room beats every 10 s, plus events. Past ~2k live rooms that is a few
+1. **Spend from abuse.** Nothing closes an idle room yet, and nothing rate-limits creating rooms. One held room costs
+   $0.0058 an hour; a script holding 10,000 costs $58 an hour. Set the Durable Objects spending limit and billing
+   alerts in the dashboard, use `ROOMS_DISABLED` if a bill runs away, and close idle rooms with per-IP limits on
+   create, lookup and connect (Workers Rate Limiting binding; Turnstile on create if bots start making rooms).
+2. **The Stats object is a single point.** Every room beats every 10 s, plus events. Past ~2k live rooms that is a few
    hundred requests/s into one object. Move event counting to Workers Analytics Engine (no single writer, SQL API for
    the console) and shard live-room tracking (e.g. 16 shards by code hash, console sums them).
-4. **Room codes.** 4 characters from 27 = 531k codes; collisions start to cost retries past ~10k live rooms. Go to 5.
-5. **Abuse.** Rate-limit `POST /api/rooms` per IP (Workers Rate Limiting binding), add Turnstile on create if bots
-   start making rooms. Per-socket flood guard, name cleaning and size limits are already in.
-6. **Latency.** A room lives near whoever made it. Friends across an ocean will feel ~150 ms; shots are resolved
+3. **Room codes.** 4 characters from 27 = 531k codes; collisions start to cost retries past ~10k live rooms, and a
+   lookup says whether a code is live. Go to 5 or 6 characters.
+4. **Latency.** A room lives near whoever made it. Friends across an ocean will feel ~150 ms; shots are resolved
    without lag compensation. Fine for code-sharing friends; for public play pick the region with `locationHint`.
-7. **Strangers can't play without a code.** If it spreads, it needs "quick play": a matchmaker object per region that
+5. **Strangers can't play without a code.** If it spreads, it needs quick play: a matchmaker object per region that
    hands out rooms with free slots.
-8. **Cheating.** Hits, damage, ammo and respawns are the room's. Movement is trusted up to sprint speed. The
-   game-specific hole: footsteps and clicks are sent by the client, so a modded client could walk silently. Fix by
-   making the room generate footsteps from movement (the stride logic is in `player.js`).
+6. **Cheating.** Hits, damage, ammo, respawns and pickups are the room's; movement is held to a 7.5 m/s budget and
+   forwarded sounds are rate-limited. Two holes remain. Every snapshot carries every actor's exact position, so a
+   wallhack is reading `R.actors` in the console (fix: only send an actor while it is near a recent sound). And
+   footsteps come from the client, so a modded client can walk silently (fix: the room generates footsteps from
+   movement; the stride logic is in `player.js`).
 
 ### What doesn't need to change
 
@@ -171,8 +208,10 @@ site is on a CDN already.
 
 ## Known gaps
 
-- No reconnect: a refresh rejoins as a new player.
-- No kick, no team modes, no spectating.
+- No kick, no team modes, no spectating, no quick play.
+- Idle rooms are not closed and nothing is rate-limited yet (see What breaks first).
+- No lag compensation: you hit where the room has the target, not where you saw it.
+- A held seat (30 s after a drop) is out of play: no bot fills it until it expires.
 - Gameplay dev flags (`fireInterval`, `diffraction`, …) are server defaults online. A client's own copies only change
   what it draws (and a faster local fire interval just gets its extra shots dropped).
 - Remote players' weapons are invisible apart from their sounds (same as bots).
