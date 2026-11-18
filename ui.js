@@ -269,8 +269,8 @@
   }
 
   const CONTROLS = [
-    ['WASD', 'move'], ['SHIFT', 'sprint (loud)'], ['C / CTRL', 'crouch (quiet)'], ['E', 'click — echolocate'],
-    ['LMB', 'fire'], ['RMB / Q', 'sonar dart'], ['F', 'knife'], ['R', 'reload'], ['TAB', 'scores'], ['M', 'mute'],
+    ['WASD', 'move'], ['SHIFT', 'sprint (loud)'], ['C / CTRL', 'crouch (quiet)'], ['SPACE', 'jump'], ['E', 'click — echolocate'],
+    ['LMB', 'fire'], ['RMB / Q', 'sonar dart'], ['F', 'knife'], ['R', 'reload'], ['TAB', 'scores'], ['M', 'mute'], ['', ''],
   ];
   function drawControls(ctx, cx, y, alpha) {
     const colW = 210, rows = Math.ceil(CONTROLS.length / 2), lh = 17;
@@ -355,7 +355,14 @@
   function drawCrosshair(ctx, P, cx, cy) {
     const spd = Math.hypot(P.vx || 0, P.vz || 0);
     const rec = typeof P.recoil === 'number' ? clamp(Math.abs(P.recoil) * 40, 0, 12) : 0;
-    const gap = 4 + spd * 0.9 + U.kick + rec;
+    let gap = 4 + spd * 0.9 + U.kick + rec;
+    if (R.flag && R.flag('csSpread') && R.weapons && R.weapons.spreadDeg) {
+      // the gap is the real spread cone at this field of view (view.js FOV 78 deg vertical), eased so it doesn't flicker
+      const foc = R.screen.h / 2 / Math.tan((78 * Math.PI) / 360);
+      const px = Math.tan((R.weapons.spreadDeg(P) * Math.PI) / 180) * foc;
+      U.sprPx = U.sprPx == null ? px : U.sprPx + (px - U.sprPx) * 0.35;
+      gap = Math.max(3, U.sprPx);
+    }
     ctx.strokeStyle = C.white; ctx.lineWidth = 1; ctx.globalAlpha = 0.75;
     line(ctx, cx - gap - 5, cy, cx - gap, cy);
     line(ctx, cx + gap, cy, cx + gap + 5, cy);

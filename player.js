@@ -15,6 +15,9 @@
 
   const M = {
     WALK: 4.2, SPRINT: 6.8, CROUCH: 1.9, ACCEL: 30,
+    STOP: 20,        // m/s^2 coasting to a stop with no keys held (momentum flag); pressing the opposite key still uses ACCEL
+    AIR_ACCEL: 5,    // steering in the air
+    JUMP_V: 5.2, GRAV: 16, // about 0.84 m up and 0.6 s in the air: onto a bed or a table, not over a counter
     STEP_INT: { step: 0.42, sprint: 0.30, crouch: 0.6 },
     PITCH_MAX: 1.45, STAND_H: 1.8, CROUCH_H: 1.2,
   };
@@ -27,6 +30,7 @@
       clickCooldown: 0, recoil: 0, hurtDir: 0, hurtT: 0, hurtX: null, hurtZ: null,
       hitMarkerT: 0, killMarkerT: 0, speedNorm: 0, moveMode: 'idle', bobPhase: 0, lastStepT: 0,
       crouchToggle: false, stepAcc: 0.5, respawnT: 0,
+      vy: 0, air: false, dryFire: true,
       update, respawn, resetMatch, canStand,
     });
     Object.defineProperty(a, 'ammo', { get() { return this.wpn ? this.wpn.ammo : 0; }, enumerable: false });
@@ -59,7 +63,7 @@
     a.health = 100; a.alive = true; a.crouch = false; a.crouchToggle = false; a.eye = 1.62;
     a.respawnT = 0; a.killer = null;
     a.recoil = 0; a.hurtT = 0; a.hurtDir = 0; a.hurtX = a.hurtZ = null; a.hitMarkerT = 0; a.killMarkerT = 0;
-    a.speedNorm = 0; a.moveMode = 'idle'; a.stepAcc = 0.5; a.clickCooldown = 0;
+    a.speedNorm = 0; a.moveMode = 'idle'; a.stepAcc = 0.5; a.clickCooldown = 0; a.vy = 0; a.air = false;
     if (R.weapons) R.weapons.resetActor(a); else a.wpn = { ammo: 12, mag: 12, reloadT: 0, fireT: 0, darts: 3, knifeT: 0, clickT: 0, dartT: 0 };
     if (R.input && R.input.takeLook) R.input.takeLook();
     R.bus.emit('spawn', { actor: a });
@@ -115,7 +119,8 @@
     const maxSpeed = a.crouch ? M.CROUCH : sprinting ? M.SPRINT : M.WALK;
     const tx = wx * maxSpeed, tz = wz * maxSpeed;
     let dvx = tx - a.vx, dvz = tz - a.vz;
-    const dvl = Math.hypot(dvx, dvz), maxDv = M.ACCEL * dt;
+    const accel = a.air ? M.AIR_ACCEL : wl === 0 && R.flag && R.flag('momentum') ? M.STOP : M.ACCEL;
+    const dvl = Math.hypot(dvx, dvz), maxDv = accel * dt;
     if (dvl > maxDv) { dvx *= maxDv / dvl; dvz *= maxDv / dvl; }
     a.vx += dvx; a.vz += dvz;
     const px = a.x, pz = a.z;
@@ -123,6 +128,30 @@
       const hit = R.world.moveActor(a, a.vx * dt, a.vz * dt);
       if (hit) { a.vx = (a.x - px) / dt; a.vz = (a.z - pz) / dt; }
     }
+    // ---- jump, gravity, landing (feet height a.y; 0 is the floor, furniture tops above 0.4 m can be stood on)
+    const floorMult = () => R.FLOOR_MULT[R.world.floorMatAt(a.x, a.z)] || 1;
+    if (live && I.pressed('Space') && !a.air && !a.crouch && R.flag && R.flag('jump')) {
+      a.vy = M.JUMP_V; a.air = true;
+      R.sound('step', a.x, a.y + 0.05, a.z, a, { mult: floorMult() });
+    }
+    const ground = R.world.groundAt(a, a.y);
+    if (a.air) {
+      a.vy -= M.GRAV * dt;
+      let ny = a.y + a.vy * dt;
+      if (a.vy > 0) {
+        const c = R.world.ceilingAt(a, a.y, ny);
+        if (c < Infinity) { ny = Math.max(a.y, c - R.actorHeight(a) - 0.01); a.vy = 0; }
+      }
+      if (ny <= ground) {
+        const fall = -a.vy;
+        a.y = ground; a.vy = 0; a.air = false;
+        // landing: as loud as a sprinting step, louder from higher
+        R.sound('sprint', a.x, a.y + 0.05, a.z, a, { mult: Math.min(2, floorMult() * (0.8 + fall * 0.06)) });
+        a.lastStepT = R.time || 0; a.stepAcc = 0;
+      } else a.y = ny;
+    } else if (ground < a.y - 0.01) { a.air = true; a.vy = 0; } // stepped off an edge
+    else a.y = ground;
+
     const moved = Math.hypot(a.x - px, a.z - pz);
     const speed = moved / dt;
     a.speedNorm = R.util.clamp(speed / M.SPRINT, 0, 1);
@@ -132,7 +161,7 @@
     a.eye = R.util.approach(a.eye, a.crouch ? W.C.CROUCH_EYE : W.C.STAND_EYE, 4 * dt);
 
     // ---- footsteps: one per stride (nominal speed * table interval)
-    if (a.moveMode === 'idle') {
+    if (a.moveMode === 'idle' || a.air) {
       a.stepAcc = Math.min(a.stepAcc, 0.5);
     } else {
       const kind = a.moveMode === 'sprint' ? 'sprint' : a.moveMode === 'crouch' ? 'crouch' : 'step';

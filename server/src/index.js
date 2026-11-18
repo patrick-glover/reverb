@@ -112,6 +112,7 @@ const CLAIM_TTL = 120000; // a claimed room with nobody in it stays joinable thi
 // movement: the client owns its position, but it can only spend distance the room has granted it.
 // Budget accrues at a little over sprint speed, so packet rate buys nothing. The cap covers about 0.9 s of sprinting
 // so a connection that stalls and then delivers a burst is followed in full (the old check allowed an 8 m hop too).
+const JUMP_MAX = 0.95; // m: a jump peaks at about 0.84 (player.js JUMP_V, GRAV)
 const MOVE_RATE = 7.5, MOVE_CAP = 6, CROUCH_MAX = 2.6, SPRINT_MIN = 5.5;
 // client-forwarded sounds: token bucket per kind {seconds per token, burst}. click matches CLICK_COOLDOWN (0.55 s);
 // footsteps come once per stride (0.3 s sprinting at the fastest) and may arrive bunched up.
@@ -514,7 +515,7 @@ export class Room extends DurableObject {
     const acts = [];
     for (const a of R.actors) {
       const fl = (a.alive ? 1 : 0) | (a.crouch ? 2 : 0) | (a.moveMode === 'sprint' ? 4 : 0);
-      acts.push([a.id, rnd(a.x), rnd(a.z), r3(a.yaw), r3(a.pitch), rnd(a.vx), rnd(a.vz), fl, a.kills, a.deaths]);
+      acts.push([a.id, rnd(a.x), rnd(a.z), r3(a.yaw), r3(a.pitch), rnd(a.vx), rnd(a.vz), fl, a.kills, a.deaths, rnd(a.y || 0)]);
     }
     let pk = 0;
     G.pickups.forEach((p, i) => { if (p.active) pk |= 1 << i; });
@@ -549,6 +550,9 @@ export class Room extends DurableObject {
     a._stAt = t;
     a._cx = x; a._cz = z; a._cseq = a.spawnSeq | 0; // the client's own idea of where it is (this life); see onClientSound
     a._budget = Math.min(MOVE_CAP, (a._budget == null ? MOVE_CAP : a._budget) + MOVE_RATE * el);
+    // height (jumping, standing on furniture): no higher than a jump above the highest top under them
+    const W = this.sim.world;
+    a.y = Math.min(clampNum(m.y, 0, 3, 0), W.groundAt(a, 3) + JUMP_MAX);
     const dx = x - a.x, dz = z - a.z, d = Math.hypot(dx, dz);
     let moved = 0;
     if (d > 0) {
@@ -567,6 +571,10 @@ export class Room extends DurableObject {
     a.pitch = clampNum(m.pitch, -1.5, 1.5, a.pitch);
     a.vx = clampNum(m.vx, -8, 8, 0); a.vz = clampNum(m.vz, -8, 8, 0);
     a._spd = spd;
+    // speed over just this message, so spread (weapons.speedOf) drops the moment you stop instead of ~0.5 s later.
+    // Faking it means actually holding still for a message.
+    a._spdNow = moved / Math.max(el, 0.05);
+    a.air = a.y > W.groundAt(a, a.y) + 0.05; // shots in the air are wild (weapons.spreadDeg)
     a.crouch = !!m.cr && spd < CROUCH_MAX; // no small hitbox at running speed
     let mm = ['idle', 'walk', 'sprint', 'crouch'][m.mm | 0] || 'idle';
     if (spd > SPRINT_MIN) mm = 'sprint';                 // sprinting is sprinting, whatever the client says

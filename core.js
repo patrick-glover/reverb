@@ -275,14 +275,15 @@
       return hit;
     },
     _resolve(a) {
-      const T = R.TILE, r = a.r, ah = R.actorHeight(a);
+      const T = R.TILE, r = a.r, ah = R.actorHeight(a), fy = a.y || 0;
       let hit = false;
       const x0 = Math.floor((a.x - r) / T), x1 = Math.floor((a.x + r) / T);
       const z0 = Math.floor((a.z - r) / T), z1 = Math.floor((a.z + r) / T);
       for (let cz = z0; cz <= z1; cz++) for (let cx = x0; cx <= x1; cx++) {
         if (cx < 0 || cz < 0 || cx >= this.w || cz >= this.h) continue;
         for (const b of this._cells[cz * this.w + cx]) {
-          if (b.max[1] <= 0.4 || b.min[1] >= ah) continue;
+          // walk through anything under 0.4 m (or under your feet when you're up on something), and under anything above your head
+          if (b.max[1] <= Math.max(0.4, fy + 0.05) || b.min[1] >= fy + ah) continue;
           const nx = Math.max(b.min[0], Math.min(a.x, b.max[0]));
           const nz = Math.max(b.min[2], Math.min(a.z, b.max[2]));
           const ddx = a.x - nx, ddz = a.z - nz, d2 = ddx * ddx + ddz * ddz;
@@ -302,6 +303,37 @@
       if (a.x < r) { a.x = r; hit = true; } if (a.x > maxX) { a.x = maxX; hit = true; }
       if (a.z < r) { a.z = r; hit = true; } if (a.z > maxZ) { a.z = maxZ; hit = true; }
       return hit;
+    },
+
+    // boxes whose xz footprint is within rr of the actor's centre
+    _near(a, rr, fn) {
+      const T = R.TILE;
+      const x0 = Math.floor((a.x - rr) / T), x1 = Math.floor((a.x + rr) / T);
+      const z0 = Math.floor((a.z - rr) / T), z1 = Math.floor((a.z + rr) / T);
+      const seen = new Set();
+      for (let cz = z0; cz <= z1; cz++) for (let cx = x0; cx <= x1; cx++) {
+        if (cx < 0 || cz < 0 || cx >= this.w || cz >= this.h) continue;
+        for (const b of this._cells[cz * this.w + cx]) {
+          if (seen.has(b)) continue;
+          seen.add(b);
+          const nx = Math.max(b.min[0], Math.min(a.x, b.max[0])), nz = Math.max(b.min[2], Math.min(a.z, b.max[2]));
+          if ((a.x - nx) ** 2 + (a.z - nz) ** 2 < rr * rr) fn(b);
+        }
+      }
+    },
+    // floor height under an actor whose feet are at y: the highest top it could be standing on (0 = the floor).
+    // Tops under 0.4 m don't count (actors walk through those), and the body has to be well over the edge.
+    groundAt(a, y) {
+      let g = 0;
+      this._near(a, a.r * 0.6, (b) => { const t = b.max[1]; if (t > 0.4 && t <= y + 0.05 && t > g) g = t; });
+      return g;
+    },
+    // lowest underside a head rising from feet y0 to y1 would hit (Infinity if none)
+    ceilingAt(a, y0, y1) {
+      const ah = R.actorHeight(a);
+      let c = Infinity;
+      this._near(a, a.r, (b) => { const m = b.min[1]; if (m >= y0 + ah - 0.02 && m < y1 + ah && m < c) c = m; });
+      return c;
     },
 
     // ---- navigation (0.5 m cells)

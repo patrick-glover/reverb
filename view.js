@@ -51,7 +51,8 @@
     }`;
 
   const VM_VS = `
-    uniform float uTime, uScale, uShotT, uShotAmp, uBase;
+    uniform float uTime, uScale, uShotT, uShotAmp, uBase, uSlide;
+    attribute float sl;   // 1 for the slide (moves back when it cycles), 0 for the frame
     attribute float dm;   // distance from muzzle (m)
     attribute float ph;   // random phase
     varying float vA;
@@ -60,7 +61,7 @@
       float lit = age < 0.0 ? 0.0 : uShotAmp * smoothstep(0.0, 0.025, age) * exp(-age * 5.5);
       float shimmer = 0.75 + 0.25 * sin(uTime * 3.0 + ph * 6.2831);
       vA = uBase * shimmer + lit;
-      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vec4 mv = modelViewMatrix * vec4(position + vec3(0.0, 0.0, sl * uSlide), 1.0);
       gl_PointSize = clamp(0.0042 * uScale / -mv.z, 1.0, 6.0);
       gl_Position = projectionMatrix * mv;
     }`;
@@ -125,7 +126,7 @@
   let vmGroup = null, vmMat = null, flMat = null, postMat = null;
   let lastWritten = 0, lastGen = -1, pendingRanges = [];
   let eyeY = 1.62, bobPhase = 0, bobAmt = 0, shake = 0, hurtFlash = 0, kickZ = 0, kickPitch = 0, orbitT = 0;
-  let shotT = -10, shotAmp = 0, flashT = -10;
+  let shotT = -10, shotAmp = 0, flashT = -10, ownShotT = -10;
   let lastAlive = true;
 
   function scaleUniform() {
@@ -200,11 +201,13 @@
     for (let z = -0.035; z <= -0.008; z += 0.007) edge([0.0125, 0.006, z], [0.0125, 0.03, z], 0.006);
     // ejection port
     edge([0.0125, 0.033, -0.11], [0.0125, 0.033, -0.07], 0.006);
-    // frame / dust cover
-    box(-0.011, -0.022, -0.185, 0.011, 0.0, -0.02);
     // sights
     box(-0.002, 0.033, -0.198, 0.002, 0.041, -0.19);
     box(-0.007, 0.033, -0.012, 0.007, 0.042, -0.004);
+    face(0.0126, -0.0126, 0.0055, 0.0275, [-0.195, -0.12], 0.011);
+    const nSlide = pts.length; // everything above moves with the slide
+    // frame / dust cover
+    box(-0.011, -0.022, -0.185, 0.011, 0.0, -0.02);
     // grip (slanted parallelepiped)
     const gy0 = -0.022, gy1 = -0.122, sl = 0.026;
     hexa([[-0.0135, gy0, -0.062], [0.0135, gy0, -0.062], [0.0135, gy0, -0.008], [-0.0135, gy0, -0.008],
@@ -222,12 +225,12 @@
     edge([0, -0.022, -0.085], [0, -0.04, -0.079], 0.005);
     // muzzle ring
     for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2; pts.push([Math.cos(a) * 0.006, 0.017 + Math.sin(a) * 0.006, -0.2055]); }
-    face(0.0126, -0.0126, 0.0055, 0.0275, [-0.195, -0.12], 0.011);
     face(0.0112, -0.0112, -0.016, -0.005, [-0.175, -0.13], 0.011);
 
-    const n = pts.length, pos = new Float32Array(n * 3), dm = new Float32Array(n), ph = new Float32Array(n);
+    const n = pts.length, pos = new Float32Array(n * 3), dm = new Float32Array(n), ph = new Float32Array(n), slide = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const p = pts[i];
+      slide[i] = i < nSlide ? 1 : 0;
       pos[i * 3] = p[0]; pos[i * 3 + 1] = p[1]; pos[i * 3 + 2] = p[2];
       dm[i] = Math.hypot(p[0] - muzzle[0], p[1] - muzzle[1], p[2] - muzzle[2]);
       ph[i] = Math.random();
@@ -236,8 +239,9 @@
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('dm', new THREE.BufferAttribute(dm, 1));
     g.setAttribute('ph', new THREE.BufferAttribute(ph, 1));
+    g.setAttribute('sl', new THREE.BufferAttribute(slide, 1));
     vmMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uScale: { value: 600 }, uShotT: { value: -10 }, uShotAmp: { value: 0 }, uBase: { value: 0.22 }, uColor: { value: new THREE.Color(0.78, 0.95, 1.0) } },
+      uniforms: { uTime: { value: 0 }, uScale: { value: 600 }, uShotT: { value: -10 }, uShotAmp: { value: 0 }, uSlide: { value: 0 }, uBase: { value: 0.22 }, uColor: { value: new THREE.Color(0.78, 0.95, 1.0) } },
       vertexShader: VM_VS, fragmentShader: VM_FS,
       blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, depthTest: false,
     });
@@ -337,6 +341,19 @@
   }
 
   // ---------------------------------------------------------------- camera
+  // slide travel (m, toward the camera): snaps back on a shot and returns in ~90 ms; locked back on an empty magazine
+  // until the reload chambers a round (the last 0.15 s of it)
+  const SLIDE_BACK = 0.024;
+  function slideOffset(p) {
+    const w = p.wpn;
+    if (!w) return 0;
+    if (w.ammo <= 0 && (!(w.reloadT > 0) || w.reloadT > 0.15)) return SLIDE_BACK;
+    if (w.ammo > 0 && w.reloadT > 0) return 0;
+    const age = (R.echo ? R.echo.time : R.time || 0) - ownShotT;
+    if (age < 0 || age > 0.09) return 0;
+    return SLIDE_BACK * (age < 0.025 ? age / 0.025 : 1 - (age - 0.025) / 0.065);
+  }
+
   function updateCamera(dt) {
     const p = R.player;
     const U = R.util;
@@ -376,6 +393,7 @@
       vmGroup.visible = p.alive !== false;
       vmGroup.position.set(VM_POS[0] + bobX * 0.35, VM_POS[1] + bobY * 0.4 - (p.crouch ? 0.005 : 0), VM_POS[2] + kickZ);
       vmGroup.rotation.set(VM_ROT[0] + rec * 0.16, VM_ROT[1], VM_ROT[2]);
+      vmMat.uniforms.uSlide.value = slideOffset(p);
     }
   }
 
@@ -448,7 +466,7 @@
       R.bus.on('sound', (ev) => {
         if (!ev || !R.player || ev.actor !== R.player) return;
         const now = R.echo ? R.echo.time : 0;
-        if (ev.kind === 'gunshot') { shotT = now; shotAmp = 1.1; if (R.flag && R.flag('muzzleFlash')) flashT = now; }
+        if (ev.kind === 'gunshot') { shotT = now; ownShotT = now; shotAmp = 1.1; if (R.flag && R.flag('muzzleFlash')) flashT = now; }
         else if (ev.kind === 'click') { if (now - shotT > 0.25 || shotAmp < 0.5) { shotT = now; shotAmp = 0.5; } }
         else if (ev.kind === 'reload') { shotT = now; shotAmp = 0.3; }
       });

@@ -5,7 +5,7 @@
 (function () {
   'use strict';
   const R = (window.R = window.R || {});
-  R.VERSION = '0.6.0-dev';
+  R.VERSION = '0.7.0-dev';
 
   // ---- registry -------------------------------------------------------------------------------------
   // type 'bool' | 'num'. apply(v) runs at boot and on every change (for flags that set a module constant).
@@ -19,6 +19,14 @@
       help: 'On: the gun is held out in front and its blast and reverb paint the shooter\'s own arms and body. Off: the shooter is invisible to their own shot.' },
     { key: 'muzzleFlash', group: 'Combat', label: 'Muzzle flash', type: 'bool', def: false, when: 'live',
       help: 'On: a white spark burst at your own muzzle (pre-0.4). Off: a shot only shows through its echoes.' },
+    { key: 'csSpread', group: 'Combat', label: 'Movement and recoil spread', type: 'bool', def: true, when: 'live',
+      help: 'On: Counter-Strike style. Shots are accurate standing still and get wider when you move, jump or keep firing; the crosshair shows the real spread. Off: fixed 0.6 deg, x3 when sprinting (pre-0.7).' },
+    { key: 'dryFire', group: 'Combat', label: 'Empty gun clicks', type: 'bool', def: true, when: 'live',
+      help: 'On: the last round leaves the slide locked back; the next trigger pull dry-clicks and starts the reload. Off: reload starts on the last shot.' },
+    { key: 'jump', group: 'Movement', label: 'Jump (Space)', type: 'bool', def: true, when: 'live',
+      help: 'On: Space jumps (onto low furniture too). Landing is a loud step. Shots in the air are wild.' },
+    { key: 'momentum', group: 'Movement', label: 'A little momentum', type: 'bool', def: true, when: 'live',
+      help: 'On: you take about 0.2 s to stop. Off: about 0.14 s (pre-0.7).' },
     { key: 'fireInterval', group: 'Combat', label: 'Pistol fire interval (s)', type: 'num', def: 0.2, min: 0.08, max: 0.5, step: 0.01, when: 'live',
       apply: (v) => R.weapons && (R.weapons.C.FIRE_INTERVAL = v) },
     { key: 'diffraction', group: 'Acoustics', label: 'Sound bends round corners', type: 'bool', def: true, when: 'live',

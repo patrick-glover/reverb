@@ -9,6 +9,11 @@
   const C = {
     DMG: 34, HEAD_MULT: 2.4, FIRE_INTERVAL: 0.2, MAG: 12, RELOAD: 1.5, SPREAD_DEG: 0.6, SPRINT_SPREAD_MULT: 3,
     RANGE: 120,
+    // csSpread flag: inaccuracy (degrees, cone half-angle) builds from movement speed, being in the air and recent
+    // shots, Counter-Strike style. Standing still and tapping is accurate; running and spamming is not.
+    SPR_STAND: 0.25, SPR_CROUCH: 0.15, SPR_WALK: 3.0, SPR_SPRINT: 5.0, SPR_AIR: 7.0, SPR_MAX: 10,
+    SPR_SPEED0: 0.6,  // m/s: below this you count as standing still
+    SPR_SHOT: 1.1, SPR_RECOVER: 0.3, // each shot adds SPR_SHOT; it decays with this time constant (s)
     DART_SPEED: 22, DART_GRAVITY: 6, DART_START: 3, DART_MAX: 5, DART_COOLDOWN: 0.5, DART_LIFE: 6,
     PING_COUNT: 3, PING_INTERVAL: 0.7,
     KNIFE_RANGE: 1.0, KNIFE_CONE_DEG: 35, KNIFE_BACK: 100, KNIFE_FRONT: 55, KNIFE_COOLDOWN: 0.6, BACKSTAB_DOT: 0.3,
@@ -40,17 +45,40 @@
       return [a.x + f[0] * 0.5 + r[0] * 0.12, ey + f[1] * 0.5 - 0.1, a.z + f[2] * 0.5 + r[2] * 0.12];
     },
 
+    // horizontal speed the spread uses: online players, what the room granted (smoothed _spd, or the latest message's
+    // _spdNow if lower, so stopping counts at once); everyone else, their velocity
+    speedOf(a) {
+      if (typeof a._spd !== 'number') return Math.hypot(a.vx || 0, a.vz || 0);
+      return typeof a._spdNow === 'number' ? Math.min(a._spd, a._spdNow) : a._spd;
+    },
+    // current cone half-angle in degrees for this actor's next shot (the crosshair draws this too)
+    spreadDeg(a) {
+      if (!(R.flag && R.flag('csSpread'))) return C.SPREAD_DEG * (a.moveMode === 'sprint' ? C.SPRINT_SPREAD_MULT : 1);
+      const w = this.ensure(a), sp = this.speedOf(a), WALK = 4.2, SPRINT = 6.8;
+      let d = a.crouch ? C.SPR_CROUCH : C.SPR_STAND;
+      if (sp > C.SPR_SPEED0) d += C.SPR_WALK * Math.min(1, (sp - C.SPR_SPEED0) / (WALK - C.SPR_SPEED0));
+      if (sp > WALK) d += (C.SPR_SPRINT - C.SPR_WALK) * Math.min(1, (sp - WALK) / (SPRINT - WALK));
+      if (a.air) d += C.SPR_AIR;
+      return Math.min(C.SPR_MAX, d + (w.shotInacc || 0));
+    },
+
     canFire(a) { const w = this.ensure(a); return a.alive !== false && w.fireT <= 0 && w.reloadT <= 0 && w.ammo > 0; },
 
     // ---- pistol: returns raycast hit (or {miss:true}) when a shot was fired, false otherwise
     fire(a) {
       const w = this.ensure(a);
       if (a.alive === false || w.fireT > 0 || w.reloadT > 0) return false;
-      if (w.ammo <= 0) { this.reload(a); return false; }
+      if (w.ammo <= 0) {
+        // the local player gets a dry click first (dryFire flag); the reload starts on that pull of the trigger
+        if (a.dryFire && R.flag && R.flag('dryFire')) { w.fireT = C.FIRE_INTERVAL; R.bus.emit('dryfire', { actor: a }); }
+        this.reload(a);
+        return false;
+      }
       w.ammo--;
       w.fireT = C.FIRE_INTERVAL;
       const f = R.forward(a.yaw, a.pitch);
-      const spreadDeg = C.SPREAD_DEG * (a.moveMode === 'sprint' ? C.SPRINT_SPREAD_MULT : 1);
+      const spreadDeg = this.spreadDeg(a);
+      w.shotInacc = Math.min(C.SPR_MAX, (w.shotInacc || 0) + C.SPR_SHOT);
       const d = spreadDir(f, (spreadDeg * Math.PI) / 180);
       const e = this.eye(a), m = this.muzzle(a);
       R.sound('gunshot', m[0], m[1], m[2], a, { dir: f.slice() });
@@ -64,7 +92,7 @@
         }
       }
       R.bus.emit('shot', { actor: a, ox: m[0], oy: m[1], oz: m[2], dx: d[0], dy: d[1], dz: d[2], hit });
-      if (w.ammo <= 0) this.reload(a);
+      if (w.ammo <= 0 && !(a.dryFire && R.flag && R.flag('dryFire'))) this.reload(a);
       return hit || { miss: true };
     },
 
@@ -199,6 +227,7 @@
         const w = a.wpn;
         if (!w) continue;
         if (w.fireT > 0) w.fireT = Math.max(0, w.fireT - dt);
+        if (w.shotInacc > 0) w.shotInacc = w.shotInacc < 0.01 ? 0 : w.shotInacc * Math.exp(-dt / C.SPR_RECOVER);
         if (w.knifeT > 0) w.knifeT = Math.max(0, w.knifeT - dt);
         if (w.clickT > 0) w.clickT = Math.max(0, w.clickT - dt);
         if (w.dartT > 0) w.dartT = Math.max(0, w.dartT - dt);

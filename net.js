@@ -355,7 +355,7 @@
       a.kills = row[8]; a.deaths = row[9];
       if (a === P) continue;
       const fl = row[7];
-      a.buf.push({ t: m.tm, x: row[1], z: row[2], yaw: row[3], pitch: row[4], vx: row[5], vz: row[6] });
+      a.buf.push({ t: m.tm, x: row[1], y: row[10] || 0, z: row[2], yaw: row[3], pitch: row[4], vx: row[5], vz: row[6] });
       if (a.buf.length > 30) a.buf.shift();
       const alive = !!(fl & 1);
       if (alive && !a.alive) { a.x = row[1]; a.z = row[2]; a.buf = [a.buf[a.buf.length - 1]]; }
@@ -437,9 +437,10 @@
       let i = b.length - 1;
       while (i > 0 && b[i].t > renderT) i--;
       const s0 = b[i], s1 = b[i + 1];
-      if (!s1) { a.x = s0.x; a.z = s0.z; a.yaw = s0.yaw; a.pitch = s0.pitch; a.vx = s0.vx; a.vz = s0.vz; continue; }
+      if (!s1) { a.x = s0.x; a.y = s0.y || 0; a.z = s0.z; a.yaw = s0.yaw; a.pitch = s0.pitch; a.vx = s0.vx; a.vz = s0.vz; continue; }
       const k = Math.max(0, Math.min(1, (renderT - s0.t) / Math.max(1e-3, s1.t - s0.t)));
       a.x = s0.x + (s1.x - s0.x) * k; a.z = s0.z + (s1.z - s0.z) * k;
+      a.y = (s0.y || 0) + ((s1.y || 0) - (s0.y || 0)) * k;
       a.yaw = s0.yaw + R.util.angleWrap(s1.yaw - s0.yaw) * k;
       a.pitch = s0.pitch + (s1.pitch - s0.pitch) * k;
       a.vx = s1.vx; a.vz = s1.vz;
@@ -452,7 +453,7 @@
     sendAcc += dt;
     if (sendAcc >= 1 / SEND_HZ && P && P.alive) {
       sendAcc = 0;
-      const st = { t: 'st', x: r2(P.x), z: r2(P.z), yaw: r3(P.yaw), pitch: r3(P.pitch), vx: r2(P.vx), vz: r2(P.vz),
+      const st = { t: 'st', x: r2(P.x), y: r2(P.y || 0), z: r2(P.z), yaw: r3(P.yaw), pitch: r3(P.pitch), vx: r2(P.vx), vz: r2(P.vz),
         cr: P.crouch ? 1 : 0, mm: Math.max(0, MOVE_MODES.indexOf(P.moveMode)), sq: P.spawnSeq || 0 };
       const key = JSON.stringify(st), t = now();
       if (key !== lastSt || t - lastStAt > KEEPALIVE * 1000) { send(st); lastSt = key; lastStAt = t; }

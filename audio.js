@@ -56,6 +56,7 @@
     R.bus.on('sound', onSound);
     R.bus.on('damage', onDamage);
     R.bus.on('kill', onKill);
+    R.bus.on('dryfire', (e) => { if (ctx && e && e.actor === R.player) playUi(dryClick, 0); });
     if (typeof window.addEventListener === 'function') {
       const unlock = () => A.unlock();
       for (const e of ['pointerdown', 'mousedown', 'keydown', 'touchstart']) window.addEventListener(e, unlock, true);
@@ -689,6 +690,13 @@
     return 0.35;
   }
   A._ui = { hitMarker, killConfirm, youDied, heartbeat };
+  // empty gun: a small dry hammer click, only in your own ears
+  function dryClick(v, t) {
+    noise(v, t, { g: 0.4, a: 0.0003, d: 0.012, type: 'highpass', f: 3500 });
+    tone(v, t, { g: 0.1, a: 0.0004, d: 0.018, f: 1900, type: 'square' });
+    noise(v, t + 0.028, { g: 0.16, a: 0.0003, d: 0.008, type: 'bandpass', f: 2400, Q: 2 });
+  }
+
   A._playUi = playUi;
   A._impactMat = impactMat;
 })();

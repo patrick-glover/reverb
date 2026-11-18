@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0-dev
+- Counter-Strike style spread (flag `csSpread`). Standing still is accurate (0.25°, crouched 0.15°); walking opens it to about 3°, sprinting 5°, and a shot in the air is wild. Each shot adds about 1°, which recovers in a few tenths of a second, so tapping beats spamming. The crosshair gap is the real spread now. Bots play by the same rule.
+- Jump with **Space** (flag `jump`): about 0.84 m, enough to get up onto beds and tables. Landing is as loud as a sprinting step. Online, the room checks your height against what's under you.
+- A little momentum (flag `momentum`): with no keys held you coast to a stop in about 0.2 s instead of 0.14 s. Pressing the opposite key still stops you fast.
+- Empty gun (flag `dryFire`): the last round leaves the slide locked back, and the next trigger pull dry-clicks and starts the reload.
+- The pistol's slide cycles back on every shot.
+- Reload progress wheel around the crosshair.
+
 ## 0.6.0-dev
 - Online play with room codes. **HOST ONLINE** makes a 4-character room and an invite link (`?room=CODE`); **JOIN WITH CODE** joins one. The host sets map, max players (2–8), bot fill, bot skill, kill limit and time limit in the lobby. Bots fill empty slots and swap out as people join and leave mid-match.
 - The room server (`server/`) is a Cloudflare Worker with one Durable Object per room. It runs the actual match from the same game scripts (bots, hits, respawns, pickups, clock). Browsers send their own movement and predict their own shots; only sound events cross the wire, and each browser traces its own echoes.
