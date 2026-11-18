@@ -371,6 +371,7 @@
 
   // ray vs actor: vertical cylinder body [0, top-0.32] + head sphere
   function rayActor(ox, oy, oz, dx, dy, dz, a, best) {
+    if (R.body && R.flag && R.flag('humanoid')) return R.body.ray(ox, oy, oz, dx, dy, dz, a, best);
     const H = R.actorHeight(a), rr = a.r * 0.86, headR = 0.17, headY = H - headR, bodyTop = H - 0.3;
     let out = null;
     // head sphere

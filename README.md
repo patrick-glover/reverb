@@ -42,6 +42,7 @@ Plain browser JS, global `R` namespace, three.js r149 only for drawing the point
 | File | What |
 |---|---|
 | `flags.js` | version, feature flags, dev panel |
+| `body.js` | humanoid bodies: capsule skeleton, walk cycle, ray tests |
 | `core.js` | world (boxes, 3D raycasting, ~0.15 µs/ray), collision, nav grid, sound hearing by walking distance, input, loop |
 | `echo.js` / `view.js` | ray-traced echo simulation (wavefront timing, bounces, lattice-snapped dots, dots that stick to actors) and the WebGL point renderer |
 | `props.js` / `maps.js` | furniture built from thin boxes; Apartment, Office, Warehouse |

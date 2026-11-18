@@ -5,12 +5,14 @@
 (function () {
   'use strict';
   const R = (window.R = window.R || {});
-  R.VERSION = '0.2.0-dev';
+  R.VERSION = '0.3.0';
 
   // ---- registry -------------------------------------------------------------------------------------
   // type 'bool' | 'num'. apply(v) runs at boot and on every change (for flags that set a module constant).
   // when: 'live' (takes effect now) | 'match' (next match start)
   const DEFS = [
+    { key: 'humanoid', group: 'Bodies', label: 'Humanoid bodies', type: 'bool', def: true, when: 'live',
+      help: 'On: 13-capsule bodies with a walk cycle, used by echoes and bullets alike. Off: original cylinder + head sphere.' },
     { key: 'stickyDots', group: 'Echo', label: 'Dots stick to bodies', type: 'bool', def: true, when: 'live',
       help: 'On: dots that hit a player follow them (original). Off: they freeze where the sound hit.' },
     { key: 'edges', group: 'Echo', label: 'Prop edge highlights', type: 'bool', def: true, when: 'live',

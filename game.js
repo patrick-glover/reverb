@@ -121,6 +121,7 @@
       const s = G.state;
       if (s === 'playing' || s === 'dead') {
         simulate(dt);
+        if (has('body', 'update')) safe('body.update', () => R.body.update(dt));
         // pointer lock watchdog (the 'lock' event covers the normal Esc case)
         if (G.requireLock && R.input && !R.input.locked) {
           G._lockLost += dt;

@@ -270,7 +270,8 @@
     }
     for (const [id, h] of found) {
       if (h.actor === b) continue;
-      const chest = h.part === 'head' ? h.y - 0.45 : R.util.clamp(h.y, 0.55, 1.25);
+      // aim at the torso: a dot on a leg means the chest is higher up
+      const chest = h.part === 'head' ? h.y - 0.45 : R.util.clamp(h.part === 'leg' ? h.y + 0.45 : h.y, 0.55, 1.25);
       const c = addContact(b, id, h.x - h.nx * 0.25 + gauss() * 0.1, h.z - h.nz * 0.25 + gauss() * 0.1, chest, 0.15, 'echo', t);
       c.sig = 0.15;
     }

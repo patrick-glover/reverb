@@ -222,7 +222,10 @@
           const ang = rnd() * 6.2832, d = fr * Math.sqrt(rnd());
           const du = Math.cos(ang) * d, dv = Math.sin(ang) * d;
           let x = h.x - nz * du, y = h.y + dv, z = h.z + nx * du;
-          if (head) {
+          if (h.cap) {
+            // humanoid: keep the splat on the limb that was hit
+            R.body.toSurface(a, h.cap, x, y, z, P3); x = P3[0]; y = P3[1]; z = P3[2];
+          } else if (head) {
             const ox = x - a.x, oy = y - headY, oz = z - a.z, l = Math.hypot(ox, oy, oz) || 1;
             x = a.x + (ox / l) * headR; y = headY + (oy / l) * headR; z = a.z + (oz / l) * headR;
           } else {
