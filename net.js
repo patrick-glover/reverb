@@ -403,6 +403,7 @@
       const a = byId.get(row[0]);
       if (!a) continue;
       a.kills = row[8]; a.deaths = row[9];
+      if (m.pg) a.ping = m.pg[row[0]] || 0;
       if (a === P) continue;
       const fl = row[7];
       a.buf.push({ t: m.tm, x: row[1], y: row[10] || 0, z: row[2], yaw: row[3], pitch: row[4], vx: row[5], vz: row[6] });

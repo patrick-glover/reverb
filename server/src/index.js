@@ -593,6 +593,11 @@ export class Room extends DurableObject {
     let pk = 0;
     G.pickups.forEach((p, i) => { if (p.active) pk |= 1 << i; });
     const base = { t: 's', tm: Math.round(R.time * 1000) / 1000, tl: Math.round(G.timeLeft * 10) / 10, a: acts, pk, e: this.events };
+    // every 2 s: each human's ping (as their browser last reported it), by actor id, for the scoreboard
+    if (this.tick % (TICK_HZ * 2) === 1) {
+      base.pg = {};
+      for (const c of this.clients.values()) if (c.actor) base.pg[c.actor.id] = Math.round(c.rtt);
+    }
     // per-client 'me' block: private numbers the HUD needs
     for (const c of this.clients.values()) {
       const a = c.actor;

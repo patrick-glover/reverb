@@ -11,6 +11,8 @@
 - Online: idle rooms close. A match ends after 3 minutes with no human moving or acting, and a room closes after 10 minutes of nobody doing anything, with a message saying why.
 - Online: **QUICK PLAY** on the menu. No code needed: you're put into a public match that has a free slot, or a new one with bots, and you're playing in seconds. Public rooms have no host, run match after match on rotating maps, and send idle players out instead of stopping. Their invite links work, so friends can follow you in.
 - The menu shows how many people are playing online right now (only when anyone is).
+- FPS (and your ping, online) in the top right; turn it off from the pause menu.
+- Online: the scoreboard (TAB) has a ping column; bots show BOT.
 - Online: traffic alerts to ntfy (secret `NTFY_TOPIC`) when live players or rooms pass a new level.
 - Online: spread reacts the moment you stop, so a stop-and-shoot isn't judged as moving.
 

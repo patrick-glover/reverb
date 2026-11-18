@@ -27,6 +27,7 @@
     hitT: 0, hitHead: false, killT: 0,
     kick: 0,             // crosshair bloom from own shots
     dragging: null,
+    fps: 0, fpsShown: 0, fpsAt: 0, // smoothed frame rate, and the number on screen (updated twice a second)
     init,
     draw,
   });
@@ -129,12 +130,21 @@
     try { window.localStorage && window.localStorage.setItem('reverb.sens', String(R.settings.sens)); } catch (e) { /* ignore */ }
   }
   const sens = () => (R.settings && R.settings.sens) || SENS_DEF;
+  // FPS / ping readout in the top right: on unless turned off in the pause menu
+  let perfOn = true;
+  try { perfOn = window.localStorage.getItem('reverb.perf') !== '0'; } catch (e) { /* storage unavailable */ }
+  function setPerf(v) {
+    perfOn = v;
+    try { window.localStorage.setItem('reverb.perf', v ? '1' : '0'); } catch (e) { /* ignore */ }
+  }
   function dieWith(G) { return G || { state: 'menu' }; }
 
   // ---------------- main ----------------
   function draw(ctx, dt) {
     U.t += dt;
     U.hot = [];
+    if (dt > 0) U.fps = U.fps ? U.fps * 0.9 + (1 / dt) * 0.1 : 1 / dt;
+    if (U.t - U.fpsAt > 0.5) { U.fpsAt = U.t; U.fpsShown = Math.round(U.fps); }
     const G = dieWith(R.game);
     const st = G.state;
     U.hitT = Math.max(0, U.hitT - dt);
@@ -147,6 +157,7 @@
     else if (st === 'dead') { drawHUD(ctx, G, true); drawDeath(ctx, G); if (input().down('Tab')) drawScoreboardPanel(ctx, G); }
     else if (st === 'paused') { drawHUD(ctx, G, true); drawPause(ctx, G); }
     else if (st === 'over') drawOver(ctx, G);
+    if (perfOn && (st === 'playing' || st === 'dead' || st === 'paused')) drawPerf(ctx);
     ctx.restore();
     handleInput(G);
   }
@@ -515,10 +526,19 @@
     text(ctx, 'FIRST TO ' + (G.killLimit || 15), W / 2, 58, 9, C.faint, 'center', 1, 2);
   }
 
+  // own frame rate, plus ping online
+  function drawPerf(ctx) {
+    const W = R.screen.w, net = R.net && R.net.inMatch ? R.net : null;
+    let s = U.fpsShown + ' FPS';
+    if (net) s += '  ·  ' + Math.round(net.rtt || 0) + ' MS';
+    const bad = U.fpsShown < 40 || (net && net.rtt > 150);
+    text(ctx, s, W - 20, 12, 9, bad ? C.red : C.dim, 'right', 0.8, 2);
+  }
+
   function drawFeed(ctx, G, W) {
     const feed = G.killFeed || [];
     const now = G.time || 0;
-    let y = 22;
+    let y = perfOn ? 32 : 22;
     for (let i = feed.length - 1; i >= 0; i--) {
       const e = feed[i];
       const age = now - e.t;
@@ -542,10 +562,12 @@
   // ---------------- scoreboard ----------------
   function drawScoreboard(ctx, G, cx, y, alpha) {
     const rank = G.ranking ? G.ranking() : R.actors.slice();
-    const w = 320, x0 = cx - w / 2, lh = 22;
+    const online = !!(R.net && R.net.active);
+    const w = online ? 380 : 320, x0 = cx - w / 2, lh = 22;
     text(ctx, 'NAME', x0 + 30, y, 9, C.dim, 'left', alpha, 2);
-    text(ctx, 'K', x0 + w - 60, y, 9, C.dim, 'right', alpha, 2);
-    text(ctx, 'D', x0 + w - 12, y, 9, C.dim, 'right', alpha, 2);
+    text(ctx, 'K', x0 + w - (online ? 120 : 60), y, 9, C.dim, 'right', alpha, 2);
+    text(ctx, 'D', x0 + w - (online ? 72 : 12), y, 9, C.dim, 'right', alpha, 2);
+    if (online) text(ctx, 'PING', x0 + w - 12, y, 9, C.dim, 'right', alpha, 2);
     ctx.strokeStyle = C.faint; ctx.lineWidth = 1; ctx.globalAlpha = alpha;
     line(ctx, x0, y + 10, x0 + w, y + 10);
     y += 26;
@@ -556,8 +578,14 @@
       text(ctx, String(i + 1), x0 + 6, y, 11, C.dim, 'left', alpha);
       ctx.fillStyle = colorOf(a); ctx.globalAlpha = da; dot(ctx, x0 + 22, y, 2.5);
       text(ctx, me ? (a.name && String(a.name).toUpperCase() !== 'YOU' ? String(a.name).toUpperCase() + ' (YOU)' : 'YOU') : nameOf(a), x0 + 30, y, 12, colorOf(a), 'left', da, 1);
-      text(ctx, String(a.kills || 0), x0 + w - 60, y, 12, C.white, 'right', alpha);
-      text(ctx, String(a.deaths || 0), x0 + w - 12, y, 12, C.dim, 'right', alpha);
+      text(ctx, String(a.kills || 0), x0 + w - (online ? 120 : 60), y, 12, C.white, 'right', alpha);
+      text(ctx, String(a.deaths || 0), x0 + w - (online ? 72 : 12), y, 12, C.dim, 'right', alpha);
+      if (online) {
+        // bots have no connection; your own ping is the live one, everyone else's comes from the room every 2 s
+        const ms = a.isBot ? null : me ? R.net.rtt : a.ping;
+        const s = a.isBot ? 'BOT' : ms ? String(Math.round(ms)) : '–';
+        text(ctx, s, x0 + w - 12, y, a.isBot ? 9 : 12, ms > 150 ? C.red : C.dim, 'right', alpha, a.isBot ? 2 : 0);
+      }
       y += lh;
     });
     ctx.globalAlpha = 1;
@@ -593,6 +621,14 @@
     ctx.globalAlpha = 1;
   }
 
+  function drawPerfToggle(ctx, cx, y) {
+    const s = 'FPS / PING  ·  ' + (perfOn ? 'ON' : 'OFF');
+    const w = textW(ctx, s, 11) + s.length * 2, m = input().mouse || { x: -1, y: -1 };
+    const hov = Math.abs(m.x - cx) < w / 2 + 8 && Math.abs(m.y - y) < 12;
+    text(ctx, s, cx, y, 11, hov ? C.white : perfOn ? C.cyan : C.dim, 'center', hov ? 1 : 0.8, 2);
+    hot(cx - w / 2 - 8, y - 12, w + 16, 24, () => setPerf(!perfOn));
+  }
+
   function drawPause(ctx, G) {
     const W = R.screen.w, H = R.screen.h;
     overlay(ctx, 0.7);
@@ -603,6 +639,8 @@
     y += 50;
     drawSensSlider(ctx, W / 2, y);
     y += 40;
+    drawPerfToggle(ctx, W / 2, y);
+    y += 32;
     y += drawControls(ctx, W / 2, y, 0.85) + 24;
     const net = R.net && R.net.active ? R.net : null;
     text(ctx, net ? 'Q  —  leave the room' : 'Q  —  quit to menu', W / 2, y, 11, C.dim, 'center', 1, 2);
