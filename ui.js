@@ -264,9 +264,9 @@
     return { w, h, sp };
   }
 
-  function drawArrowSelector(ctx, cx, y, label, onPrev, onNext) {
+  function drawArrowSelector(ctx, cx, y, label, onPrev, onNext, minHalf) {
     text(ctx, label, cx, y, 15, C.white, 'center', 0.95, 4);
-    const half = Math.max(110, textW(ctx, label, 15) / 2 + 40);
+    const half = Math.max(minHalf || 110, textW(ctx, label, 15) / 2 + 40);
     const m = input().mouse;
     for (const s of [-1, 1]) {
       const ax = cx + s * half;
@@ -276,6 +276,21 @@
       ctx.globalAlpha = 1;
       hot(ax - 18, y - 14, 36, 28, s < 0 ? onPrev : onNext);
     }
+  }
+
+  // your colour (R.PALETTE): name on the scoreboard, dart pings, and everyone's view of your sounds
+  function drawSwatches(ctx, cx, y) {
+    const cur = R.net.myColor(), m = input().mouse || { x: -1, y: -1 };
+    const n = R.PALETTE.length, gap = 22, x0 = cx - ((n - 1) * gap) / 2;
+    text(ctx, 'COLOR', cx, y - 22, 10, C.dim, 'center', 1, 3);
+    R.PALETTE.forEach((c, i) => {
+      const x = x0 + i * gap, on = c === cur, hov = Math.hypot(m.x - x, m.y - y) < 10;
+      ctx.globalAlpha = on || hov ? 1 : 0.7; ctx.fillStyle = c;
+      ctx.beginPath(); ctx.arc(x, y, on ? 7.5 : 6, 0, Math.PI * 2); ctx.fill();
+      if (on) { ctx.strokeStyle = C.white; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 10.5, 0, Math.PI * 2); ctx.stroke(); }
+      hot(x - 10, y - 12, 20, 24, () => R.net.setColor(c));
+    });
+    ctx.globalAlpha = 1;
   }
 
   function drawSensSlider(ctx, cx, y) {
@@ -326,6 +341,14 @@
     drawArrowSelector(ctx, W / 2, y, G.mapName ? G.mapName().toUpperCase() : 'MAP',
       () => G.setMap && G.setMap(G.mapIndex - 1), () => G.setMap && G.setMap(G.mapIndex + 1));
     y += compact ? 50 : 62;
+    // offline match length and your colour, side by side
+    if (G.stepTime) {
+      const tx = W / 2 - 135, m = G.offlineMinutes;
+      text(ctx, 'TIME LIMIT', tx, y - 22, 10, C.dim, 'center', 1, 3);
+      drawArrowSelector(ctx, tx, y, m ? m + ' MIN' : 'NONE', () => G.stepTime(-1), () => G.stepTime(1), 70);
+    }
+    if (R.PALETTE && R.net && R.net.setColor) drawSwatches(ctx, W / 2 + 135, y);
+    y += compact ? 46 : 56;
     drawSensSlider(ctx, W / 2, y);
     y += compact ? 32 : 44;
     y += drawControls(ctx, W / 2, y, 0.9) + (compact ? 14 : 26);
@@ -370,7 +393,10 @@
     }
     drawTop(ctx, G, W);
     drawFeed(ctx, G, W);
-    const goAge = R.net && R.net.inMatch ? (performance.now() - R.net.goAt) / 1000 : 9;
+    // offline countdown (online, the deploy and death screens show the room's)
+    if (G.countdown > 0 && !(R.net && R.net.inMatch)) drawCountdown(ctx, cx, cy - 60, G.countdown, 'GET READY');
+    const goAt = Math.max(R.net && R.net.inMatch ? R.net.goAt : -1e9, G.goAt || -1e9);
+    const goAge = (performance.now() - goAt) / 1000;
     if (goAge >= 0 && goAge < 0.9) {
       const sc = 1 + 0.5 * Math.exp(-goAge / 0.08);
       text(ctx, 'GO', cx, cy - 70, Math.round(40 * sc), C.cyan, 'center', goAge > 0.6 ? (0.9 - goAge) / 0.3 : 1, 10);

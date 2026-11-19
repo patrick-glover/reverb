@@ -56,6 +56,8 @@
     goAt: -1e9,       // performance.now() when the countdown ran out (the HUD flashes GO)
     ready: false,     // our lobby ready toggle
     init, update, openHost, openJoin, openQuick, leave, backToLobby,
+    myColor: () => myColor(), // your saved colour (offline menu swatches use these too)
+    setColor: (c) => setMyColor(c),
     endMatch: () => send({ t: 'end' }),       // host: finish the running match now (results, then lobby)
     closeRoom: () => { N._closing = true; send({ t: 'close' }); }, // host: send everyone out and shut the room
   });

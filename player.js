@@ -31,7 +31,7 @@
       hitMarkerT: 0, killMarkerT: 0, speedNorm: 0, moveMode: 'idle', bobPhase: 0, lastStepT: 0,
       crouchToggle: false, stepAcc: 0.5, respawnT: 0,
       vy: 0, air: false, dryFire: true,
-      update, respawn, resetMatch, canStand,
+      update, look, respawn, resetMatch, canStand,
     });
     Object.defineProperty(a, 'ammo', { get() { return this.wpn ? this.wpn.ammo : 0; }, enumerable: false });
     Object.defineProperty(a, 'darts', { get() { return this.wpn ? this.wpn.darts : 0; }, enumerable: false });
@@ -81,6 +81,22 @@
     return true;
   }
 
+  function lookStep(a, live) {
+    const I = R.input;
+    const lk = I.takeLook ? I.takeLook() : { dx: 0, dy: 0 };
+    if (live) {
+      const s = (R.settings && R.settings.sens) || 0.0022;
+      a.yaw = R.util.angleWrap(a.yaw - lk.dx * s);
+      a.pitch = R.util.clamp(a.pitch - lk.dy * s, -M.PITCH_MAX, M.PITCH_MAX);
+    }
+  }
+  // mouse look only (the offline countdown: you can look around before you can move)
+  function look() {
+    const a = this, I = R.input;
+    if (!a.alive || !I) return;
+    lookStep(a, I.locked || a.allowUnlockedLook);
+  }
+
   function update(dt) {
     const a = this, I = R.input, W = R.weapons;
     if (!a.alive || dt <= 0) return;
@@ -88,12 +104,7 @@
     const live = I.locked || a.allowUnlockedLook;
 
     // ---- look
-    const lk = I.takeLook ? I.takeLook() : { dx: 0, dy: 0 };
-    if (live) {
-      const s = (R.settings && R.settings.sens) || 0.0022;
-      a.yaw = R.util.angleWrap(a.yaw - lk.dx * s);
-      a.pitch = R.util.clamp(a.pitch - lk.dy * s, -M.PITCH_MAX, M.PITCH_MAX);
-    }
+    lookStep(a, live);
 
     // ---- crouch (C toggles, Ctrl holds); Shift cancels a toggled crouch
     if (I.pressed('KeyC')) a.crouchToggle = !a.crouchToggle;

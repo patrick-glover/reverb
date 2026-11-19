@@ -2,6 +2,9 @@
 
 ## 0.8.0-dev
 From the first playtest.
+- Offline: a 3 s GET READY countdown at the start of a match (everything holds still, you can look around), with the same beeps and GO as online.
+- Offline: TIME LIMIT on the menu (3, 5, 6, 10 or 15 min, or none), saved in this browser.
+- Offline: COLOR swatches on the menu, the same choice as online: your name color, your dart pings, and bots avoid it.
 - Wider knife swing (flag `wideMelee`): reaches 1.45 m in a 65° cone either side (was 1.0 m and 35°), for bots too.
 - Hits feel like hits. The marker pops in and settles, grows with hits in a row, turns gold on a headshot and bursts red on a kill. Damage numbers float off the crosshair. A kill shows ELIMINATED (or KNIFED) and the name under the crosshair, plus HEADSHOT, and DOUBLE / TRIPLE / QUAD KILL / RAMPAGE for kills within 4 s of each other. The hit sound has a low thock under the tick and climbs a semitone per hit in a row; headshots ring; kill streaks climb an arpeggio.
 - Sonar darts make sounds of their own: a quiet whoosh when thrown (it paints a little around you and bots can hear it) and a thunk and arming chirp where they stick (which paints a small patch, so you see where it landed).

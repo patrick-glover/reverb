@@ -42,14 +42,14 @@ so the bill follows room-hours, not players.
 Sizes: S = an evening, M = a few sessions, L = a milestone. Grouped into batches that share code, in suggested order.
 
 **Batch A: quick feel wins — done in 0.8.0-dev** (wider melee, hit feedback, dart sounds, no time limit, ready up +
-countdown + CLICK TO DEPLOY). Open: offline matches still start instantly (no countdown) and have no time-limit setting.
+countdown + CLICK TO DEPLOY).
 
 **Batch B: input (M, in order).**
 - **Custom key bindings, saved per user.** Rebind screen in the pause/settings menu; save in `localStorage` like `reverb.sens` (a cookie isn't needed: same per-browser scope, nothing to send to the server). Needs an action layer in `core.js` input (`fire`, `dart`, `click`, …) instead of raw `KeyW`/`KeyQ` checks. Also frees Q/E for lean (backlog).
 - **Controller mapping.** Gamepad API polled each frame into the same action layer, with a stick sensitivity/deadzone setting and aim assist off by default. Do after bindings so it's one more input source, not a second code path.
 
 **Batch C: identity — color picker done in 0.8.0-dev** (8 swatches on join/host/lobby, unique per room, tints your
-dart pings). Open: a color picker on the offline menu (offline uses the color saved from online for now).
+dart pings).
 
 **Batch D: shotgun (M–L).**
 - Second weapon class: pickup or loadout pick. Pellets as several short rays; each pellet hit paints dots, so one blast lights up a cone of the room (strong sound/visual tradeoff, fits the game). Needs a weapon slot in `actor.wpn`, ammo/reload rules, HUD, a sound, server validation of the spread, and bots that know when to use it (close range).

@@ -12,6 +12,8 @@
   const PICKUP_R = 1.0;
   const FEED_MAX = 7;
   const LOCK_GRACE = 0.6; // seconds without pointer lock while playing before auto-pausing
+  const OFFLINE_COUNTDOWN = 3; // s of "get ready" at the start of an offline match (the room does its own online)
+  const TIME_CHOICES = [3, 5, 6, 10, 15, 0]; // offline match length in minutes; 0 = no time limit
 
   // call a module function without letting one broken module stop the frame; log each failure site once
   const failed = {};
@@ -39,6 +41,10 @@
     botCount: 5,
     humans: null,       // multiplayer server: remote player actors to put in the match (instead of R.player)
     rules: {},          // multiplayer: {killLimit, matchTime} override the defaults
+    countdown: 0,       // offline: s left before play starts (the world holds still, you can look around)
+    goAt: -1e9,         // performance.now() when the offline countdown ran out (the HUD flashes GO)
+    offlineMinutes: MATCH_TIME / 60, // offline match length (menu setting, saved); 0 = no time limit
+    TIME_CHOICES,
     stats: null,
     _lockLost: 0,
 
@@ -55,6 +61,10 @@
         if (m >= 0) G.mapIndex = m;
       } catch (e) { /* storage unavailable */ }
       G.mapIndex = clampMap(G.mapIndex);
+      try {
+        const t = window.localStorage && window.localStorage.getItem('reverb.time');
+        if (t != null && TIME_CHOICES.indexOf(+t) >= 0) G.offlineMinutes = +t;
+      } catch (e) { /* storage unavailable */ }
       G.stats = freshStats();
       setState('menu');
     },
@@ -63,6 +73,12 @@
     mapName(i) {
       const m = R.maps && R.maps[i == null ? G.mapIndex : i];
       return (m && m.name) || 'Map ' + ((i == null ? G.mapIndex : i) + 1);
+    },
+    // offline time limit: step through TIME_CHOICES
+    stepTime(d) {
+      const i = TIME_CHOICES.indexOf(G.offlineMinutes);
+      G.offlineMinutes = TIME_CHOICES[((i < 0 ? 2 : i) + d + TIME_CHOICES.length) % TIME_CHOICES.length];
+      try { window.localStorage && window.localStorage.setItem('reverb.time', String(G.offlineMinutes)); } catch (e) { /* ignore */ }
     },
     setMap(i) {
       G.mapIndex = clampMap(i);
@@ -108,8 +124,13 @@
       for (const a of order) spawnActor(a, true);
 
       G.killFeed.length = 0;
+      // offline (a local player, not a room's match): the menu's time setting and a short countdown
+      const offline = !!R.player && !(R.net && R.net._starting);
+      const mt = offline ? G.offlineMinutes * 60 : G.rules.matchTime;
       // matchTime 0 = no time limit (kill limit only)
-      G.matchTime = G.rules.matchTime === 0 ? Infinity : G.rules.matchTime || MATCH_TIME;
+      G.matchTime = mt === 0 ? Infinity : mt || MATCH_TIME;
+      G.countdown = offline ? OFFLINE_COUNTDOWN : 0;
+      G._beep = 99;
       G.timeLeft = G.matchTime;
       G.killLimit = G.rules.killLimit || KILL_LIMIT;
       G.time = 0;
@@ -272,8 +293,19 @@
 
   // ---------------- simulation ----------------
   function simulate(dt) {
-    G.time += dt;
     const P = R.player;
+    if (G.countdown > 0) {
+      // get ready: everything holds still; you can look around but not move or shoot
+      G.countdown = Math.max(0, G.countdown - dt);
+      const sec = Math.ceil(G.countdown);
+      if (G.countdown === 0) {
+        G.goAt = typeof performance !== 'undefined' ? performance.now() : 0;
+        if (R.audio && R.audio.countdown) R.audio.countdown(true);
+      } else if (sec < G._beep) { G._beep = sec; if (R.audio && R.audio.countdown) R.audio.countdown(false); }
+      if (P && P.alive && typeof P.look === 'function') safe('player.look', () => P.look());
+      return;
+    }
+    G.time += dt;
     if (P && P.alive && typeof P.update === 'function') safe('player.update', () => P.update(dt));
     if (has('bots', 'update')) safe('bots.update', () => R.bots.update(dt));
     if (has('weapons', 'update')) safe('weapons.update', () => R.weapons.update(dt));
