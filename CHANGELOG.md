@@ -15,6 +15,8 @@
 - Online: the scoreboard (TAB) has a ping column; bots show BOT.
 - Online: traffic alerts to ntfy (secret `NTFY_TOPIC`) when live players or rooms pass a new level.
 - Online: spread reacts the moment you stop, so a stop-and-shoot isn't judged as moving.
+- Bodies hold the pistol in a proper two-handed stance: arms pushed out nearly straight, grip just under the eye line, a slight lean into the gun. Standing still, the feet plant shoulder-width apart with the gun-side foot back. Arms and legs are hit and echo shapes, so they're where they look.
+- Bots strafe while they shoot instead of standing in the open, and look for cover: a spot out of your line of sight (tall cover, or low cover they crouch behind) when reloading, hurt or after a burst. In cover they stay down and lean or stand out now and then for a shot.
 
 ## 0.6.0-dev
 - Online play with room codes. **HOST ONLINE** makes a 4-character room and an invite link (`?room=CODE`); **JOIN WITH CODE** joins one. The host sets map, max players (2–8), bot fill, bot skill, kill limit and time limit in the lobby. Bots fill empty slots and swap out as people join and leave mid-match.

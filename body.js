@@ -60,37 +60,44 @@
     }
     let hy = 0;
     const legs = [];
+    // shooting stance when planted with the gun up: support (left) foot forward with a soft knee, gun-side foot
+    // ~20 cm back with the leg near-straight, feet shoulder-width apart and toes turned out (both feet stay grounded)
+    const set = a._set || 0;
     for (let s = -1; s <= 1; s += 2) {
       const p = a._phase + (s > 0 ? Math.PI : 0);
-      const ha = g.hip0 + g.hipA * Math.sin(p);
-      const kn = g.knee0 + g.kneeA * Math.pow(Math.max(0, Math.cos(p - 0.35)), 1.4);
+      const hOff = set * (s < 0 ? 0.2 : -0.15), kOff = set * (s < 0 ? 0.25 : 0);
+      const ha = g.hip0 + hOff + g.hipA * Math.sin(p);
+      const kn = g.knee0 + kOff + g.kneeA * Math.pow(Math.max(0, Math.cos(p - 0.35)), 1.4);
       const th = ha - kn;
-      legs.push(s, ha, th, p);
+      legs.push(s, ha, th, p, hOff, kOff);
       hy = Math.max(hy, LT * Math.cos(ha) + LS * Math.cos(th) + 0.06);
     }
     // swing components: crouch flexion is always forward; gait swing follows travel direction
-    for (let i = 0; i < 8; i += 4) {
-      const s = legs[i], ha = legs[i + 1], th = legs[i + 2];
-      const hx = s * 0.095, hY = hy - 0.02;
+    for (let i = 0; i < 12; i += 6) {
+      const s = legs[i], ha = legs[i + 1], th = legs[i + 2], hOff = legs[i + 4], kOff = legs[i + 5];
+      const hx = s * (0.095 + 0.025 * set), hY = hy - 0.02, wide = s * 0.08 * set;
       const fwdK = Math.sin(ha), fwdS = Math.sin(th);
       // split the forward offset into a static crouch part (local +z) and a swing part (travel direction)
-      const base = Math.sin(g.hip0), baseS = Math.sin(g.hip0 - g.knee0);
-      const kx = hx + (fwdK - base) * LT * mx, kz = (base + (fwdK - base) * mz) * LT, ky = hY - LT * Math.cos(ha);
-      const ex = kx + (fwdS - baseS) * LS * mx, ez = kz + (baseS + (fwdS - baseS) * mz) * LS, ey = ky - LS * Math.cos(th);
-      const tx = ex, tz = ez + 0.17 * Math.cos(th), tyy = ey + 0.17 * Math.sin(th);
+      const base = Math.sin(g.hip0 + hOff), baseS = Math.sin(g.hip0 + hOff - g.knee0 - kOff);
+      const kx = hx + wide * 0.5 + (fwdK - base) * LT * mx, kz = (base + (fwdK - base) * mz) * LT, ky = hY - LT * Math.cos(ha);
+      const ex = kx + wide * 0.5 + (fwdS - baseS) * LS * mx, ez = kz + (baseS + (fwdS - baseS) * mz) * LS, ey = ky - LS * Math.cos(th);
+      const tx = ex + s * 0.05 * set, tz = ez + 0.17 * Math.cos(th) - 0.008 * set, tyy = ey + 0.17 * Math.sin(th);
       put(hx, hY, 0, kx, ky, kz, 0.075, 'leg');
       put(kx, ky, kz, ex, ey, ez, 0.058, 'leg');
       put(ex, ey, ez, tx, Math.max(0.03, tyy), tz, 0.042, 'leg');
     }
-    const L = g.lean, spy = Math.cos(L), spz = Math.sin(L);
+    // lean into the gun a little while aiming
+    const L = g.lean + 0.1 * (a._aim || 0), spy = Math.cos(L), spz = Math.sin(L);
     put(-0.075, hy + spy * 0.06, spz * 0.06, -0.075, hy + spy * 0.5, spz * 0.5, 0.12, 'body');
     put(0.075, hy + spy * 0.06, spz * 0.06, 0.075, hy + spy * 0.5, spz * 0.5, 0.12, 'body');
     put(0, hy + spy * 0.66, spz * 0.66, 0, hy + spy * 0.75, spz * 0.75, 0.105, 'head');
-    // two-handed pistol grip in front of the face, following view pitch (blended out while sprinting)
+    // isosceles two-handed pistol stance: arms pushed out from the shoulders, grip just under the eye line,
+    // swung about the shoulders with view pitch (blended out while sprinting). Grip on the centre line so both arms
+    // come out near-locked (0.553 of 0.56 m), elbows just soft.
     const aim = a._aim || 0, pit = a.pitch || 0;
-    const eyeL = hy + spy * 0.71, GR = 0.36;
-    const gx = 0.07, gy = eyeL - 0.13 + Math.sin(pit) * GR, gz = spz * 0.5 + Math.cos(pit) * GR;
-    for (let i = 0; i < 8; i += 4) {
+    const REACH = 0.5, LIFT = 0.12, sp0 = Math.sin(pit), cp0 = Math.cos(pit);
+    const gx = 0, gy = hy + spy * 0.5 + REACH * sp0 + LIFT * cp0, gz = spz * 0.5 + REACH * cp0 - LIFT * sp0;
+    for (let i = 0; i < 12; i += 6) {
       const s = legs[i], p = legs[i + 3];
       const shx = s * 0.205, shy = hy + spy * 0.5, shz = spz * 0.5;
       const q = L * 0.4 + g.arm0 - g.armA * Math.sin(p);
@@ -161,6 +168,9 @@
         // gun raised unless sprinting
         const aimT = R.flag && !R.flag('selfEcho') ? 0 : sp > WALK + 0.5 ? 0 : 1;
         a._aim = (a._aim == null ? aimT : a._aim) + (aimT - (a._aim == null ? aimT : a._aim)) * Math.min(1, dt * 8);
+        // planted stance: gun up, standing (not crouched), barely moving
+        const setT = a._aim > 0.5 && !a.crouch && sp < 0.6 ? 1 : 0;
+        a._set = (a._set || 0) + (setT - (a._set || 0)) * Math.min(1, dt * 6);
         if (sp > 0.2) {
           // travel direction in the actor's local frame, smoothed
           const sy = Math.sin(a.yaw || 0), cy = Math.cos(a.yaw || 0);

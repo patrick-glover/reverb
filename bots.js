@@ -28,19 +28,19 @@
     aggressive: {
       engageRange: 20, crouchDist: 5, sprintFar: 16, relocateP: 0.3, memory: 9, holdT: 0.8,
       clickEvery: 7, dartEvery: 16, hpSeek: 30, roamCrouchP: 0.1, burst: [3, 4], crouchShoot: false,
-      knifeHunt: false, reloadAt: 3, aimMult: 1.1, investRange: 26, fleeHp: 35, pingCurious: true, burstPause: [0.35, 0.7],
+      knifeHunt: false, reloadAt: 3, aimMult: 1.1, investRange: 26, fleeHp: 35, pingCurious: true, burstPause: [0.35, 0.7], strafe: 2.4,
       w: { sneak: 0.45, hold: 0.9, hunt: 1.1, health: 0.9 },
     },
     cautious: {
       engageRange: 16, crouchDist: 10, sprintFar: 99, relocateP: 0.8, memory: 12, holdT: 3.0,
       clickEvery: 10, dartEvery: 11, hpSeek: 60, roamCrouchP: 0.3, burst: [2, 3], crouchShoot: true,
-      knifeHunt: false, reloadAt: 5, aimMult: 0.95, investRange: 12, fleeHp: 70, pingCurious: false, burstPause: [0.6, 1.1],
+      knifeHunt: false, reloadAt: 5, aimMult: 0.95, investRange: 12, fleeHp: 70, pingCurious: false, burstPause: [0.6, 1.1], strafe: 1.7,
       w: { sneak: 0.6, hold: 1.1, hunt: 0.95, health: 1.1 },
     },
     sneaky: {
       engageRange: 14, crouchDist: 12, sprintFar: 99, relocateP: 0.7, memory: 12, holdT: 2.0,
       clickEvery: 14, dartEvery: 9, hpSeek: 45, roamCrouchP: 0.55, burst: [2, 3], crouchShoot: true,
-      knifeHunt: true, reloadAt: 4, aimMult: 1.0, investRange: 18, fleeHp: 40, pingCurious: false, burstPause: [0.5, 1.0],
+      knifeHunt: true, reloadAt: 4, aimMult: 1.0, investRange: 18, fleeHp: 40, pingCurious: false, burstPause: [0.5, 1.0], strafe: 1.5,
       w: { sneak: 1.15 },
     },
   };
@@ -165,6 +165,7 @@
     const t = R.time || 0;
     return {
       persName, pers: PERS[persName], state: 'roam', scores: null, sneakId: -1,
+      cover: null, coverT: -99, peekUntil: 0, peekNext: 0, strafeSign: 1, strafeFlipT: 0, strafeX: 0, strafeZ: 0,
       contacts: new Map(), interests: [],
       goal: null, field: null, fieldGoal: null, fieldT: -99, legMode: 'walk', pauseUntil: 0,
       engagedId: -1, lastEngageT: -99, reactAt: 0, burstLeft: 0, nextShotT: 0, aimOff: [0, 0],
@@ -428,7 +429,9 @@
         br.lastEngageT = t;
         const a = x.aimAt(c.x, c.chest, c.z);
         o.look = { yaw: a.yaw + br.aimOff[0], pitch: a.pitch + br.aimOff[1] };
-        o.stand = true; o.crouchStill = P.crouchShoot;
+        // behind low cover: stand up out of it and shoot from the spot. Otherwise side-step while firing
+        if (br.cover && br.cover.low && atCover(b)) { o.stand = true; o.crouchStill = false; }
+        else o.strafe = strafeDir(b, c, cd, t);
         const err = Math.abs(R.util.angleWrap(o.look.yaw - b.yaw)) + Math.abs(o.look.pitch - b.pitch);
         if (t >= br.reactAt && t >= br.nextShotT && err < 2.5 * DEG && wp.fireT <= 0) {
           const r = R.weapons.fire(b);
@@ -444,6 +447,24 @@
             }
           }
         }
+      },
+    },
+    {
+      name: 'cover', // reloading, hurt or out of ammo with a live threat: get out of its line of fire
+      score(x) {
+        const { b, br, P, c, age, cd, t, wp, reloading } = x;
+        if (!c || age > 5 || cd > 26 || cd < 1.5) return 0;
+        const need = reloading || wp.ammo <= P.reloadAt || t - br.hurtT < 2.5 || b.health <= P.hpSeek;
+        if (!need) return 0;
+        const cv = coverFor(b, c, t);
+        if (!cv || atCover(b)) return 0;
+        return 0.83;
+      },
+      run(x) {
+        const { b, br, c, o } = x;
+        o.goal = br.cover; o.mode = 'walk';
+        o.look = x.aimAt(c.x, c.chest, c.z);
+        if (hyp(br.cover.x - b.x, br.cover.z - b.z) < 0.6) { o.stand = true; o.crouchStill = br.cover.low; }
       },
     },
     {
@@ -464,7 +485,7 @@
       run(x) {
         const { b, br, P, t, dt, o } = x;
         o.look = { yaw: br.hurtYaw, pitch: 0 };
-        if (P.persName !== 'aggressive' && t - br.hurtT < dt * 1.5) startRelocate(b, t, null);
+        if (P.persName !== 'aggressive' && t - br.hurtT < dt * 1.5) startRelocate(b, t, { x: b.x - Math.sin(br.hurtYaw) * 10, z: b.z - Math.cos(br.hurtYaw) * 10, chest: 1.3, id: -1 });
         o.stand = true; o.crouchStill = true;
       },
     },
@@ -518,8 +539,18 @@
       },
       run(x) {
         const { b, P, c, age, cd, t, o } = x;
+        const { br } = x;
         o.look = x.aimAt(c.x, c.chest, c.z);
         o.stand = true; o.crouchStill = P.persName !== 'aggressive';
+        if (br.cover && !br.cover.none && hyp(br.cover.x - b.x, br.cover.z - b.z) < 2 && hyp(br.cover.tx - c.x, br.cover.tz - c.z) < 4) {
+          // in cover: stay down, then lean or stand out now and then to look for a shot
+          if (t > br.peekNext) { br.peekUntil = t + rand(0.7, 1.3); br.peekNext = br.peekUntil + rand(1.2, 2.6); }
+          const peeking = t < br.peekUntil && !x.reloading;
+          if (br.cover.low) o.crouchStill = !peeking;
+          else if (peeking && br.cover.peek) { o.stand = false; o.goal = br.cover.peek; o.mode = 'crouch'; }
+          else if (!atCover(b)) { o.stand = false; o.goal = br.cover; o.mode = 'crouch'; } // back in behind it
+          else o.crouchStill = true;
+        }
         maybeClick(b, t, cd < 9 && age > 1.0, o.look);
       },
     },
@@ -632,7 +663,7 @@
     const o = x.o;
 
     if (state !== 'engage' && state !== 'knife') {
-      if (wp.ammo <= 0 || (wp.ammo <= P.reloadAt && (x.age > 2 || state === 'relocate'))) doReload(b);
+      if (wp.ammo <= 0 || (wp.ammo <= P.reloadAt && (x.age > 2 || state === 'relocate' || state === 'cover'))) doReload(b);
       // exposed by a nearby dart ping: get out (not aggressive ones: they get ready)
       if (state !== 'relocate' && t - br.exposedT < 0.1 && P.persName !== 'aggressive' && state !== 'hold' && t >= br.relocateUntil) startRelocate(b, t, null);
     }
@@ -650,7 +681,14 @@
     }
 
     // ---- movement
-    if (o.stand || !o.goal) {
+    if (o.strafe) {
+      b.crouch = false;
+      const x0 = b.x, z0 = b.z;
+      moveVel(b, dt, o.strafe.x, o.strafe.z, o.strafe.s);
+      b.moveMode = hyp(b.vx, b.vz) > 0.6 ? 'walk' : 'idle';
+      // ran into something: step the other way
+      if (hyp(b.x - x0, b.z - z0) < o.strafe.s * dt * 0.3) { br.strafeSign = -br.strafeSign; br.strafeFlipT = t + rand(0.5, 1.1); }
+    } else if (o.stand || !o.goal) {
       b.crouch = o.crouchStill;
       moveVel(b, dt, 0, 0, 0);
       b.moveMode = 'idle';
@@ -735,6 +773,17 @@
 
   function startRelocate(b, t, c) {
     const br = b.brain, W = R.world;
+    // a threat with a known position: break line of sight rather than just moving
+    if (c) {
+      const cv = coverFor(b, c, t, true);
+      if (cv) {
+        br.relocGoal = { x: cv.x, z: cv.z };
+        br.relocateUntil = t + rand(2.0, 3.5);
+        br.relocateMinT = t + rand(0.7, 1.2);
+        br.goal = null;
+        return;
+      }
+    }
     const f = W.flowField(b.x, b.z, 12);
     const cell = (W.w * R.TILE) / W.navW;
     let best = null, bs = -Infinity;
@@ -752,6 +801,80 @@
     br.relocateUntil = t + rand(2.0, 3.5);
     br.relocateMinT = t + rand(0.7, 1.2);
     br.goal = null;
+  }
+
+  // ======================= cover =======================
+  // A cover spot hides the bot from a threat's eye line: 'high' cover hides it standing, 'low' cover only crouched.
+  // A good spot is close by path, not toward the threat, and has a peek: a step to one side (high) or standing up
+  // (low) that gives back line of sight to shoot from.
+  const THREAT_EYE = 1.5;
+  function hiddenAt(c, x, z, y) { return !R.world.los(c.x, THREAT_EYE, c.z, x, y, z, true); }
+  function coverFor(b, c, t, fresh) {
+    const br = b.brain;
+    const cv = br.cover;
+    // reuse while the threat hasn't moved much and the spot still hides us
+    if (!fresh && cv && t - br.coverT < 2.5 && hyp(cv.tx - c.x, cv.tz - c.z) < 2.5) return cv.none ? null : cv;
+    br.cover = findCover(b, c) || { none: true, tx: c.x, tz: c.z };
+    br.coverT = t;
+    return br.cover.none ? null : br.cover;
+  }
+  function findCover(b, c) {
+    const W = R.world;
+    const f = W.flowField(b.x, b.z, 9);
+    const cell = (W.w * R.TILE) / W.navW;
+    const d0 = hyp(b.x - c.x, b.z - c.z);
+    let best = null, bs = -Infinity;
+    // sample cells in a box around the bot (path distance still decides what's reachable)
+    const ci = Math.floor(b.x / cell), cj = Math.floor(b.z / cell), rc = Math.ceil(8 / cell), navH = (f.length / W.navW) | 0;
+    for (let k = 0; k < 48; k++) {
+      const gi = ci + Math.round(rand(-rc, rc)), gj = cj + Math.round(rand(-rc, rc));
+      if (gi < 0 || gj < 0 || gi >= W.navW || gj >= navH) continue;
+      const i = gj * W.navW + gi;
+      const pd = f[i];
+      if (!(pd <= 8)) continue;
+      const x = ((i % W.navW) + 0.5) * cell, z = (((i / W.navW) | 0) + 0.5) * cell;
+      const dc = hyp(x - c.x, z - c.z);
+      if (dc < 3) continue;
+      const low = !hiddenAt(c, x, z, 1.45);
+      if (low && (!hiddenAt(c, x, z, 1.0) ? true : !hiddenAt(c, x, z, 0.65))) continue; // not hidden even crouched
+      let peek = null;
+      if (!low) {
+        // a step to the side that sees the threat
+        const ux = (x - c.x) / dc, uz = (z - c.z) / dc;
+        for (const sd of [1, -1]) for (const st of [0.8, 1.3]) {
+          const px = x - uz * sd * st, pz = z + ux * sd * st;
+          if (W.walkable(px, pz) && !hiddenAt(c, px, pz, 1.35)) { peek = { x: px, z: pz }; break; }
+        }
+        if (peek == null) continue;
+      }
+      let s = -pd * 0.55 + (low ? 0 : 0.8) + Math.min(3, dc - d0) * 0.4 + Math.random() * 0.5;
+      if (dc < 5) s -= 2;
+      if (s > bs) { bs = s; best = { x, z, low, peek, tx: c.x, tz: c.z }; }
+    }
+    return best;
+  }
+  function atCover(b) {
+    const cv = b.brain.cover;
+    return !!cv && !cv.none && hyp(cv.x - b.x, cv.z - b.z) < 0.7;
+  }
+  // side-step across the threat's line of fire; flips every ~0.5-1.3 s, leans toward known cover, keeps a range
+  function strafeDir(b, c, cd, t) {
+    const br = b.brain, P = br.pers;
+    if (t > br.strafeFlipT) {
+      br.strafeSign = Math.random() < 0.65 ? -br.strafeSign : br.strafeSign;
+      br.strafeFlipT = t + rand(0.5, 1.3);
+    }
+    const ux = (b.x - c.x) / (cd || 1), uz = (b.z - c.z) / (cd || 1);
+    let px = -uz * br.strafeSign, pz = ux * br.strafeSign;
+    const cv = br.cover;
+    if (cv && !cv.none && hyp(cv.x - b.x, cv.z - b.z) < 6) {
+      const side = (cv.x - b.x) * -uz + (cv.z - b.z) * ux;
+      if (Math.abs(side) > 0.5 && t > br.strafeFlipT - 0.3) { px = -uz * Math.sign(side); pz = ux * Math.sign(side); }
+    }
+    // range: aggressive bots press in from far, everyone backs off when very close
+    const radial = cd < 4 ? 0.5 : P.persName === 'aggressive' && cd > 11 ? -0.35 : 0;
+    const dx = px + ux * radial, dz = pz + uz * radial, l = hyp(dx, dz) || 1;
+    return { x: dx / l, z: dz / l, s: P.strafe * (0.8 + 0.4 * Math.sin(t * 1.7 + b.id)) };
   }
 
   function newRoamGoal(b) {
