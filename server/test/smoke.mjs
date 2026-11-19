@@ -40,18 +40,40 @@ ok(A.lobby && A.lobby.players.length === 2, 'lobby shows 2 players');
 ok(A.lobby.host === A.cid, 'first player is host');
 
 B.send({ t: 'settings', settings: { killLimit: 3 } }); // not host: ignored
-A.send({ t: 'settings', settings: { botFill: false, killLimit: 4, timeLimit: 3, map: 1 } });
+A.send({ t: 'settings', settings: { botFill: false, killLimit: 4, timeLimit: 0, map: 1 } }); // 0 = no time limit
 await sleep(200);
 ok(B.lobby.settings.killLimit === 4 && B.lobby.settings.botFill === false, 'host settings reach guest, guest settings ignored');
 
-A.send({ t: 'start' });
+// colours: B asks for A's colour (refused), then a free one (granted)
+B.send({ t: 'color', c: A.lobby.players.find((p) => p.cid === A.cid).color });
+await sleep(200);
+ok(B.lobby.players.find((p) => p.cid === B.cid).color !== A.lobby.players.find((p) => p.cid === A.cid).color, 'taken colour refused');
+B.send({ t: 'color', c: '#ff1ad1' });
+await sleep(200);
+ok(B.lobby.players.find((p) => p.cid === B.cid).color === '#ff1ad1', 'free colour granted');
+B.send({ t: 'color', c: '#123456' });
+await sleep(200);
+ok(B.lobby.players.find((p) => p.cid === B.cid).color === '#ff1ad1', 'colour outside the palette refused');
+
+// ready up: one ready doesn't start it; both ready does
+B.send({ t: 'lready', on: true });
+await sleep(300);
+ok(B.lobby.phase === 'lobby' && B.lobby.players.find((p) => p.cid === B.cid).rdy === 1, 'B ready, still in the lobby');
+A.send({ t: 'lready', on: true });
 await sleep(500);
-A.send({ t: 'ready' }); B.send({ t: 'ready' }); // both "clicked in"
-ok(A.start && B.start, 'both got start');
+A.send({ t: 'ready' }); B.send({ t: 'ready' }); // both "clicked in" during the countdown
+ok(A.start && B.start, 'both got start once everyone was ready');
+ok(A.start.cd > 4, 'start carries the countdown (' + (A.start && A.start.cd) + ' s)');
 ok(A.start.actors.length === 2, 'two actors, no bots (got ' + (A.start && A.start.actors.length) + ')');
 ok(A.you && B.you && A.you !== B.you, 'each client has its own actor');
-await sleep(1000);
-ok(B.snaps > 20, 'snapshots streaming (' + B.snaps + ' in ~1.5 s)');
+ok(!A.events.some((e) => e[0] === 'sp' && e[1] === A.you), 'nobody spawns during the countdown');
+for (let i = 0; i < 80 && !(A.last && A.last.cd === 0); i++) await sleep(100);
+ok(A.last && A.last.cd === 0, 'countdown ran out');
+await sleep(300);
+ok(A.events.some((e) => e[0] === 'sp' && e[1] === A.you), 'clicked-in players spawn at GO');
+const n0 = B.snaps; await sleep(1000);
+ok(A.start.matchTime === 0 && A.last.tl === -1 && A.lobby.settings.timeLimit === 0, 'no time limit: matchTime 0, timeLeft -1');
+ok(B.snaps - n0 > 20, 'snapshots streaming (' + (B.snaps - n0) + ' in 1 s)');
 
 const W = loadWorld(); W.props.build(W.maps[1]); // map 1, set above
 const pos = (c, id) => c.last.a.find((r) => r[0] === id);

@@ -5,7 +5,7 @@
 (function () {
   'use strict';
   const R = (window.R = window.R || {});
-  R.VERSION = '0.7.0-dev';
+  R.VERSION = '0.8.0-dev';
 
   // ---- registry -------------------------------------------------------------------------------------
   // type 'bool' | 'num'. apply(v) runs at boot and on every change (for flags that set a module constant).
@@ -23,6 +23,8 @@
       help: 'On: Counter-Strike style. Shots are accurate standing still and get wider when you move, jump or keep firing; the crosshair shows the real spread. Off: fixed 0.6 deg, x3 when sprinting (pre-0.7).' },
     { key: 'dryFire', group: 'Combat', label: 'Empty gun clicks', type: 'bool', def: true, when: 'live',
       help: 'On: the last round leaves the slide locked back; the next trigger pull dry-clicks and starts the reload. Off: reload starts on the last shot.' },
+    { key: 'wideMelee', group: 'Combat', label: 'Wider knife swing', type: 'bool', def: true, when: 'live',
+      help: 'On: the knife reaches 1.45 m in a 65 deg cone either side (0.8). Off: 1.0 m and 35 deg (pre-0.8).' },
     { key: 'jump', group: 'Movement', label: 'Jump (Space)', type: 'bool', def: true, when: 'live',
       help: 'On: Space jumps (onto low furniture too). Landing is a loud step. Shots in the air are wild.' },
     { key: 'momentum', group: 'Movement', label: 'A little momentum', type: 'bool', def: true, when: 'live',
@@ -33,6 +35,8 @@
       help: 'On: loud sounds re-emit dimmer dots from doorways and corners into the rooms beyond, and a sound out of sight is heard (by you and bots) from the opening it comes round. Off: straight rays only, heard from the true position.' },
     { key: 'directivity', group: 'Acoustics', label: 'Gunshots louder in front', type: 'bool', def: true, when: 'live',
       help: 'On: a gunshot reaches about twice as far ahead of the gun as behind it, for dots, audio and bot hearing. Off: the same in every direction.' },
+    { key: 'playerColorSounds', group: 'Echo', label: 'Everyone\'s sounds in their color', type: 'bool', def: false, when: 'live',
+      help: 'On: every sound anyone else makes, bot or human (shots, steps, clicks, knife, darts), paints in the color their name shows in on the scoreboard. Off: everyone else paints in the red-orange enemy color; only players\' dart pings use their color.' },
     { key: 'edges', group: 'Echo', label: 'Prop edge highlights', type: 'bool', def: true, when: 'live',
       apply: (v) => R.echo && (R.echo.EDGES = v) },
     { key: 'soundSpeed', group: 'Echo', label: 'Wavefront speed (m/s)', type: 'num', def: 26, min: 8, max: 120, step: 1, when: 'live',

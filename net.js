@@ -17,10 +17,11 @@
   const INTERP = 0.1;      // remote actors are drawn this far (s) behind the newest snapshot
   const MOVE_MODES = ['idle', 'walk', 'sprint', 'crouch'];
   // own sounds this browser already made itself (the room's copy is skipped)
-  const SELF_PREDICTED = new Set(['step', 'sprint', 'crouch', 'click', 'gunshot', 'reload', 'melee']);
+  const SELF_PREDICTED = new Set(['step', 'sprint', 'crouch', 'click', 'gunshot', 'reload', 'melee', 'dartThrow']);
   // own sounds the room can't know about unless we tell it
   const FORWARD = new Set(['step', 'sprint', 'crouch', 'click']);
 
+  const PALETTE = R.PALETTE; // core.js: the 8 colours players pick from (bots get the rest)
   const now = () => performance.now();
   const lsGet = (k) => { try { return window.localStorage.getItem(k); } catch (e) { return null; } };
   const lsSet = (k, v) => { try { window.localStorage.setItem(k, v); } catch (e) { /* ignore */ } };
@@ -51,6 +52,9 @@
     isHost: () => !!N.cid && N.cid === N.hostCid,
     quick: false,     // this room is a quick play room (no host, matches back to back)
     online: null,     // {players, rooms} from the server, for the menu's "N playing online"
+    countdown: 0,     // s until play starts (the room holds everyone still while it runs)
+    goAt: -1e9,       // performance.now() when the countdown ran out (the HUD flashes GO)
+    ready: false,     // our lobby ready toggle
     init, update, openHost, openJoin, openQuick, leave, backToLobby,
     endMatch: () => send({ t: 'end' }),       // host: finish the running match now (results, then lobby)
     closeRoom: () => { N._closing = true; send({ t: 'close' }); }, // host: send everyone out and shut the room
@@ -62,6 +66,7 @@
   let serverT = 0, recvAt = 0; // newest snapshot's server clock and when it arrived
   let sendAcc = 0, pingAcc = 0, rttAcc = 0, sentReady = false;
   let lastSt = '', lastStAt = 0; // last movement message sent, and when
+  let lastBeep = 99;            // the last countdown second we beeped for (snapshots can nudge the clock back up)
   let ticket = null;            // {code, rk, name}: lets this tab take its seat back after a drop or refresh
   let rejoinUntil = 0;          // while > now, a lost connection retries instead of failing
   let mode = 'menu';          // overlay screen: host | join | lobby | msg
@@ -73,9 +78,13 @@
     return u;
   }
   const myName = () => lsGet('reverb.name') || '';
+  // chosen colour, saved in this browser; also tints your own dart pings offline
+  const myColor = () => { const c = lsGet('reverb.color'); return PALETTE.includes(c) ? c : PALETTE[0]; };
+  const setMyColor = (c) => { if (!PALETTE.includes(c)) return; lsSet('reverb.color', c); if (R.player) R.player.color = c; };
 
   // ---------------- init: wrap weapons for prediction, forward own sounds ----------------
   function init() {
+    if (R.player) R.player.color = myColor();
     const W = R.weapons;
     if (W && !W._netWrapped) {
       W._netWrapped = true;
@@ -109,6 +118,8 @@
         const w = W.ensure(a);
         if (a.alive === false || w.darts <= 0 || w.dartT > 0) return false;
         w.darts--; w.dartT = W.C.DART_COOLDOWN;
+        const f = R.forward(a.yaw, a.pitch), e = W.eye(a);
+        R.sound('dartThrow', e[0] + f[0] * 0.4, e[1], e[2] + f[2] * 0.4, a);
         act('dart', a);
         return true;
       };
@@ -224,7 +235,8 @@
     closeWs();
     N._connName = name;
     const url = serverBase().replace(/^http/, 'ws') + '/api/rooms/' + code + '/ws?v=' + PROTOCOL +
-      '&name=' + encodeURIComponent(name) + '&uid=' + encodeURIComponent(uid()) + (rk ? '&rk=' + encodeURIComponent(rk) : '');
+      '&name=' + encodeURIComponent(name) + '&uid=' + encodeURIComponent(uid()) + '&color=' + encodeURIComponent(myColor()) +
+      (rk ? '&rk=' + encodeURIComponent(rk) : '');
     let ws;
     try { ws = new WebSocket(url); } catch (e) { return fail('could not connect'); }
     N.ws = ws;
@@ -325,6 +337,7 @@
         break;
       case 'lobby':
         N.phase = m.phase; N.hostCid = m.host; N.settings = m.settings; N.players = m.players; N.quick = !!m.quick;
+        { const me = (m.players || []).find((p) => p.cid === N.cid); N.ready = !!(me && me.rdy); }
         if (!N.inMatch && R.game.state !== 'over') { mode = 'lobby'; showOverlay(); }
         render();
         break;
@@ -363,7 +376,8 @@
     // we're out of play until we click in: the room spawns us after our 'ready' (see update)
     P.alive = false; P.netWaiting = true; P.respawnT = 0;
     sentReady = false;
-    if (m.timeLeft != null) G.timeLeft = m.timeLeft;
+    if (m.timeLeft != null && m.timeLeft >= 0) G.timeLeft = m.timeLeft;
+    N.countdown = +m.cd > 0 ? +m.cd : 0; lastBeep = 99; N.ready = false;
     serverT = 0; recvAt = now();
     if (!(R.input && R.input.locked)) G.pause(); // 'click to play' (pointer lock needs a click)
   }
@@ -372,7 +386,7 @@
     const P = R.player, keep = new Set();
     for (const r of list) {
       keep.add(r.id);
-      if (r.id === youId) continue;
+      if (r.id === youId) { if (P && r.color) P.color = r.color; continue; }
       let a = byId.get(r.id);
       if (!a) {
         a = R.makeActor({ name: r.name, isBot: r.isBot, color: r.color });
@@ -398,7 +412,8 @@
     if (!N.inMatch) return;
     const G = R.game, P = R.player;
     serverT = m.tm; recvAt = now();
-    if (typeof m.tl === 'number') G.timeLeft = m.tl;
+    if (typeof m.tl === 'number' && m.tl >= 0) G.timeLeft = m.tl;
+    if (typeof m.cd === 'number') setCountdown(m.cd);
     for (const row of m.a) {
       const a = byId.get(row[0]);
       if (!a) continue;
@@ -477,9 +492,25 @@
     if (w) G.winner = w;
   }
 
+  // countdown: beep on 3, 2, 1 and a higher one at GO; never twice for the same second
+  function setCountdown(cd) {
+    const was = N.countdown;
+    N.countdown = Math.max(0, cd);
+    const sec = Math.ceil(N.countdown);
+    if (was > 0 && N.countdown === 0) {
+      N.goAt = now();
+      if (R.audio && R.audio.countdown) R.audio.countdown(true);
+      lastBeep = 0;
+    } else if (sec < lastBeep && sec > 0) {
+      if (sec <= 3 && R.audio && R.audio.countdown) R.audio.countdown(false);
+      lastBeep = sec;
+    }
+  }
+
   // ---------------- per frame (game.js calls this while an online match runs) ----------------
   function update(dt) {
     const P = R.player;
+    if (N.countdown > 0) setCountdown(N.countdown - dt);
     // remote actors: interpolate between the two snapshots around renderT
     const renderT = serverT + Math.min(0.25, (now() - recvAt) / 1000) - INTERP;
     for (const a of byId.values()) {
@@ -550,6 +581,10 @@
   #mp ul{list-style:none;margin:0;padding:0}
   #mp li{display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #121c24}
   #mp li .sw{width:8px;height:8px;border-radius:50%}
+  #mp .pal{display:flex;gap:8px;margin:6px 0 2px;flex-wrap:wrap}
+  #mp .pal button{flex:none;width:24px;height:24px;min-width:0;padding:0;border-radius:50%;border:2px solid transparent;box-shadow:0 0 0 1px #0a1016 inset;cursor:pointer}
+  #mp .pal button.on{border-color:#fff;box-shadow:0 0 10px currentColor}
+  #mp .pal button:disabled{opacity:.18;cursor:default}
   #mp li .tag{color:#6f8796;font-size:11px}
   #mp li .rt{margin-left:auto;color:#6f8796;font-size:11px;font-variant-numeric:tabular-nums}
   #mp .grid{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
@@ -595,6 +630,7 @@
       N._lastForm = mode;
       h += `<h2>${mode === 'host' ? 'HOST ONLINE GAME' : mode === 'quick' ? 'QUICK PLAY' : 'JOIN A GAME'}</h2>`;
       h += `<label for="mp_name">Your name</label><input type="text" id="mp_name" maxlength="16" value="${esc(myName())}" placeholder="Player" autocomplete="off">`;
+      h += `<label>Your color</label>${swatches(myColor(), null)}`;
       if (mode === 'join') h += `<label for="mp_code">Room code</label><input type="text" id="mp_code" maxlength="4" value="${esc(N._joinCode || '')}" placeholder="ABCD" autocomplete="off" style="text-transform:uppercase;letter-spacing:.3em">`;
       h += `<div class="err">${esc(N.error)}</div>`;
       h += `<div class="row"><button id="mp_cancel">Cancel</button><button class="go" id="mp_go">${mode === 'host' ? 'Create room' : mode === 'quick' ? 'Find a match' : 'Join'}</button></div>`;
@@ -611,6 +647,7 @@
         h += `<li><span class="sw" style="background:${safeColor(p.color)}"></span>${esc(p.name)} <span class="tag">${tags}</span><span class="rt">${+p.rtt ? Math.round(+p.rtt) + ' ms' : ''}</span></li>`;
       }
       h += '</ul>';
+      h += `<label>Your color${N.phase === 'lobby' ? '' : ' · dart pings glow in it'}</label>${swatches(myLobbyColor(), takenColors())}`;
       h += `<div class="err">${esc(N.error)}</div>`;
       h += `<div class="wait">${N.phase === 'playing' ? 'match in progress, joining…' : 'next match starts in a few seconds…'}</div>`;
       h += '<div class="row"><button id="mp_leave">Leave</button></div>';
@@ -620,24 +657,27 @@
       h += `<div class="row" style="margin-top:8px"><button id="mp_copy">Copy invite link</button></div>`;
       h += `<h3>Players · ${N.players.length}/${+S.maxPlayers || '?'}</h3><ul>`;
       for (const p of N.players) {
-        const tags = [p.cid === N.hostCid ? 'host' : '', p.cid === N.cid ? 'you' : '', p.away ? 'reconnecting' : ''].filter(Boolean).join(' · ');
+        const tags = [p.cid === N.hostCid ? 'host' : '', p.cid === N.cid ? 'you' : '', p.away ? 'reconnecting' : '', N.phase === 'lobby' && p.rdy ? '✓ ready' : ''].filter(Boolean).join(' · ');
         h += `<li><span class="sw" style="background:${safeColor(p.color)}"></span>${esc(p.name)} <span class="tag">${tags}</span><span class="rt">${+p.rtt ? Math.round(+p.rtt) + ' ms' : ''}</span></li>`;
       }
       h += '</ul>';
+      h += `<label>Your color${N.phase === 'lobby' ? '' : ' · dart pings glow in it'}</label>${swatches(myLobbyColor(), takenColors())}`;
       const maps = (R.maps || []).map((m, i) => `<option value="${i}"${i === S.map ? ' selected' : ''}>${esc(m.name)}</option>`).join('');
       const opts = (vals, cur, fmt) => vals.map((v) => `<option value="${v}"${v === cur ? ' selected' : ''}>${fmt ? fmt(v) : v}</option>`).join('');
       h += `<h3>Match${host ? '' : ' · set by host'}</h3><div class="grid">`;
       h += `<div><label for="mp_map">Map</label><select id="mp_map"${dis}>${maps}</select></div>`;
       h += `<div><label for="mp_max">Max players</label><select id="mp_max"${dis}>${opts([2, 3, 4, 5, 6, 7, 8], S.maxPlayers)}</select></div>`;
       h += `<div><label for="mp_kill">Kill limit</label><select id="mp_kill"${dis}>${opts([5, 10, 15, 20, 30], S.killLimit)}</select></div>`;
-      h += `<div><label for="mp_time">Time limit</label><select id="mp_time"${dis}>${opts([3, 5, 6, 10, 15], S.timeLimit, (v) => v + ' min')}</select></div>`;
+      h += `<div><label for="mp_time">Time limit</label><select id="mp_time"${dis}>${opts([3, 5, 6, 10, 15, 0], S.timeLimit, (v) => (v ? v + ' min' : 'none'))}</select></div>`;
       h += `<div><label for="mp_skill">Bot skill</label><select id="mp_skill"${dis}>${SKILLS.map(([v, n]) => `<option value="${v}"${Math.abs(v - S.botSkill) < 0.01 ? ' selected' : ''}>${n}</option>`).join('')}</select></div>`;
       h += `<div><label for="mp_fill" style="margin-top:30px"><input type="checkbox" id="mp_fill"${S.botFill ? ' checked' : ''}${dis}>fill empty slots with bots</label></div>`;
       h += '</div>';
       h += `<div class="err">${esc(N.error)}</div>`;
       if (N.phase !== 'lobby') h += `<div class="wait">${N.phase === 'playing' ? 'match in progress, joining…' : 'match just ended…'}</div>`;
-      h += `<div class="row"><button id="mp_leave">Leave</button>${host ? `<button id="mp_close">Close room</button><button class="go" id="mp_start"${N.phase === 'lobby' ? '' : ' disabled'}>Start match</button>` : ''}</div>`;
-      if (!host && N.phase === 'lobby') h += '<div class="wait">waiting for the host to start</div>';
+      const nReady = N.players.filter((p) => p.rdy).length;
+      const readyBtn = N.phase === 'lobby' ? `<button id="mp_ready"${N.ready ? ' class="go"' : ''}>${N.ready ? 'Ready ✓' : 'Ready up'}</button>` : '';
+      h += `<div class="row"><button id="mp_leave">Leave</button>${host ? '<button id="mp_close">Close room</button>' : ''}${readyBtn}${host ? `<button class="go" id="mp_start"${N.phase === 'lobby' ? '' : ' disabled'}>Start now</button>` : ''}</div>`;
+      if (N.phase === 'lobby') h += `<div class="wait">${nReady}/${N.players.length} ready · starts when everyone is ready${host ? ', or start now' : ' or the host starts it'}</div>`;
     }
     h += '</div>';
     // keep focus/typing in a re-rendered form
@@ -648,6 +688,16 @@
     }
     wire();
   }
+
+  // colour swatches: `taken` (a Set) greys out other players' colours; null on the join form
+  function swatches(cur, taken) {
+    return '<div class="pal">' + PALETTE.map((c) => {
+      const dis = taken && taken.has(c) && c !== cur;
+      return `<button class="sw${c === cur ? ' on' : ''}" data-c="${c}" style="background:${c};color:${c}" title="${dis ? 'taken' : c}"${dis ? ' disabled' : ''}></button>`;
+    }).join('') + '</div>';
+  }
+  function takenColors() { return new Set(N.players.filter((p) => p.cid !== N.cid).map((p) => p.color)); }
+  function myLobbyColor() { const me = N.players.find((p) => p.cid === N.cid); return me ? me.color : myColor(); }
 
   function wire() {
     const $ = (id) => document.getElementById(id);
@@ -675,6 +725,13 @@
     };
     if ($('mp_leave')) $('mp_leave').onclick = () => { leave(); try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignore */ } };
     if ($('mp_start')) $('mp_start').onclick = () => send({ t: 'start' });
+    for (const b of document.querySelectorAll('#mp .pal button')) b.onclick = () => {
+      const c = b.dataset.c;
+      setMyColor(c);
+      if (N.active) send({ t: 'color', c }); // the room confirms (or refuses a taken one) in its next lobby message
+      render();
+    };
+    if ($('mp_ready')) $('mp_ready').onclick = () => { N.ready = !N.ready; send({ t: 'lready', on: N.ready }); render(); };
     if ($('mp_close')) $('mp_close').onclick = () => N.closeRoom();
     const set = (id, key, conv) => { if ($(id)) $(id).onchange = () => send({ t: 'settings', settings: { [key]: conv($(id)) } }); };
     set('mp_map', 'map', (e) => +e.value);

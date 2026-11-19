@@ -25,6 +25,17 @@
     ping:   [0.30, 0.70, 1.00],
   };
   const BLUE = [0.30, 0.46, 1.00];
+  // a human's chosen colour ('#rrggbb' or '#rgb') as 0..1 rgb, for their dart pings; cached per string
+  const tints = new Map();
+  function hexRgb(h) {
+    if (typeof h !== 'string') return null;
+    if (tints.has(h)) return tints.get(h);
+    let m = /^#([0-9a-f]{6})$/i.exec(h), v = null;
+    if (m) v = [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16) / 255);
+    else if ((m = /^#([0-9a-f]{3})$/i.exec(h))) v = [0, 1, 2].map((i) => parseInt(m[1][i], 16) / 15);
+    tints.set(h, v);
+    return v;
+  }
   const MATK = { metal: 1.12, glass: 0.72, fabric: 0.72, wood: 1.0, concrete: 0.85, plaster: 0.9, floor: 0.72, ceiling: 0.36, flesh: 1.25 };
   // per-kind visual tweaks: gain, base dot size, surface-spread probability
   const KIND = {
@@ -151,7 +162,12 @@
     if (!ev || !(ev.radius > 0) || !(ev.rays > 0)) return;
     if (![ev.x, ev.y, ev.z].every(Number.isFinite)) return;
     const src = ev.kind === 'ping' ? 'ping' : (COL[ev.source] ? ev.source : 'world');
-    const base = COL[src];
+    // a human's dart pings glow in their colour (bots' stay ping blue). With playerColorSounds on, every sound anyone
+    // else makes, bot or human, paints in their roster colour (the one their name shows in) instead of enemy red-orange.
+    const a = ev.actor;
+    const tint = a && ((src === 'ping' && !a.isBot) || (a !== R.player && R.flag && R.flag('playerColorSounds')))
+      ? hexRgb(a.color) : null;
+    const base = tint || COL[src];
     const kd = KIND[ev.kind] || KDEF;
     const cone = ev.cone && ev.dir ? ev.cone : 0;
     const p = R.player;

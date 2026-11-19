@@ -108,7 +108,8 @@
       for (const a of order) spawnActor(a, true);
 
       G.killFeed.length = 0;
-      G.matchTime = G.rules.matchTime || MATCH_TIME;
+      // matchTime 0 = no time limit (kill limit only)
+      G.matchTime = G.rules.matchTime === 0 ? Infinity : G.rules.matchTime || MATCH_TIME;
       G.timeLeft = G.matchTime;
       G.killLimit = G.rules.killLimit || KILL_LIMIT;
       G.time = 0;
@@ -163,7 +164,7 @@
       if (G.state === 'over' || G.state === 'menu') return;
       const ranked = G.ranking();
       G.winner = ranked[0] || null;
-      G.stats.timePlayed = G.matchTime - G.timeLeft;
+      G.stats.timePlayed = isFinite(G.matchTime) ? G.matchTime - G.timeLeft : G.time;
       setState('over');
       if (R.input && R.input.locked) R.input.exitLock();
       R.bus && R.bus.emit('match:end', { winner: G.winner });

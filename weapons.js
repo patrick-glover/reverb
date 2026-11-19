@@ -16,7 +16,7 @@
     SPR_SHOT: 1.1, SPR_RECOVER: 0.3, // each shot adds SPR_SHOT; it decays with this time constant (s)
     DART_SPEED: 22, DART_GRAVITY: 6, DART_START: 3, DART_MAX: 5, DART_COOLDOWN: 0.5, DART_LIFE: 6,
     PING_COUNT: 3, PING_INTERVAL: 0.7,
-    KNIFE_RANGE: 1.0, KNIFE_CONE_DEG: 35, KNIFE_BACK: 100, KNIFE_FRONT: 55, KNIFE_COOLDOWN: 0.6, BACKSTAB_DOT: 0.3,
+    KNIFE_RANGE: 1.0, KNIFE_CONE_DEG: 35, KNIFE_RANGE_WIDE: 1.45, KNIFE_CONE_WIDE: 65, KNIFE_BACK: 100, KNIFE_FRONT: 55, KNIFE_COOLDOWN: 0.6, BACKSTAB_DOT: 0.3,
     CLICK_COOLDOWN: 0.55,
     STAND_EYE: 1.62, CROUCH_EYE: 1.05,
     RESPAWN: 3,
@@ -127,6 +127,7 @@
         stuck: false, stuckActor: null, ox: 0, oy: 0, oz: 0, pings: 0, pingT: 0, age: 0,
       };
       this.darts.push(dart);
+      R.sound('dartThrow', e[0] + f[0] * 0.4, e[1], e[2] + f[2] * 0.4, a);
       return dart;
     },
 
@@ -137,12 +138,14 @@
       w.knifeT = C.KNIFE_COOLDOWN;
       const f = R.forward(a.yaw, 0), e = this.eye(a);
       R.sound('melee', e[0] + f[0] * 0.6, e[1] - 0.3, e[2] + f[2] * 0.6, a);
-      const cosCone = Math.cos((C.KNIFE_CONE_DEG * Math.PI) / 180);
+      const wide = !!(R.flag && R.flag('wideMelee'));
+      const range = wide ? C.KNIFE_RANGE_WIDE : C.KNIFE_RANGE;
+      const cosCone = Math.cos(((wide ? C.KNIFE_CONE_WIDE : C.KNIFE_CONE_DEG) * Math.PI) / 180);
       let best = null, bestD = Infinity;
       for (const t of R.actors) {
         if (t === a || !t.alive) continue;
         const dx = t.x - a.x, dz = t.z - a.z, dist = Math.hypot(dx, dz);
-        if (dist > C.KNIFE_RANGE + t.r) continue;
+        if (dist > range + t.r) continue;
         if (dist > 1e-4 && (dx * f[0] + dz * f[2]) / dist < cosCone) continue;
         const ty = t.y + R.actorHeight(t) * 0.6;
         if (!R.world.los(e[0], e[1], e[2], t.x, ty, t.z, true)) continue;
@@ -280,6 +283,7 @@
         d.x = hit.x + hit.nx * 0.03; d.y = hit.y + hit.ny * 0.03; d.z = hit.z + hit.nz * 0.03;
         d.stuck = true; d.vx = d.vy = d.vz = 0;
         d.surface = hit.surface;
+        R.sound('dartStick', d.x, d.y, d.z, null);
         if (hit.actor) {
           const t = hit.actor;
           d.stuckActor = t; d.ayaw = t.yaw; d.ox = d.x - t.x; d.oy = d.y - t.y; d.oz = d.z - t.z;

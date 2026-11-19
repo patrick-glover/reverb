@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0-dev
+From the first playtest.
+- Wider knife swing (flag `wideMelee`): reaches 1.45 m in a 65° cone either side (was 1.0 m and 35°), for bots too.
+- Hits feel like hits. The marker pops in and settles, grows with hits in a row, turns gold on a headshot and bursts red on a kill. Damage numbers float off the crosshair. A kill shows ELIMINATED (or KNIFED) and the name under the crosshair, plus HEADSHOT, and DOUBLE / TRIPLE / QUAD KILL / RAMPAGE for kills within 4 s of each other. The hit sound has a low thock under the tick and climbs a semitone per hit in a row; headshots ring; kill streaks climb an arpeggio.
+- Sonar darts make sounds of their own: a quiet whoosh when thrown (it paints a little around you and bots can hear it) and a thunk and arming chirp where they stick (which paints a small patch, so you see where it landed).
+- Online: pick your color from 8 swatches when joining or hosting, and in the lobby (taken colors are greyed out). Your dart pings glow in your color for everyone; it's saved in this browser and used offline too.
+- One palette of 8 colors for everyone (red, orange, gold, lime, mint, sky, periwinkle, magenta), picked by search to be as far apart as possible and clear of the pale cyan your own sounds use. Players pick first and bots take the colors left over, so nobody in a match shares a color; a bot wearing a color a joining player picks switches to a free one.
+- Flag `playerColorSounds` (off by default): every sound anyone else makes, bot or human, paints in the color their name shows in on the scoreboard instead of the red-orange enemy color, so you can tell who's who. Works offline against bots too.
+- Online: no time limit option (Time limit: none). The match runs to the kill limit; the timer shows ∞.
+- Online: ready up. Everyone in the lobby has a Ready button and the match starts as soon as everyone is ready; the host can still start at any time. The match then counts down 5 s with everything held still (beeps on 3, 2, 1, then GO). Instead of a pause screen you get CLICK TO DEPLOY with the countdown, the rules and the controls; click in during the countdown and you spawn at GO.
+
 ## 0.7.0-dev
 - Counter-Strike style spread (flag `csSpread`). Standing still is accurate (0.25°, crouched 0.15°); walking opens it to about 3°, sprinting 5°, and a shot in the air is wild. Each shot adds about 1°, which recovers in a few tenths of a second, so tapping beats spamming. The crosshair gap is the real spread now. Bots play by the same rule.
 - Jump with **Space** (flag `jump`): about 0.84 m, enough to get up onto beds and tables. Landing is as loud as a sprinting step. Online, the room checks your height against what's under you.

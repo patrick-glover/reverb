@@ -54,8 +54,21 @@
     death:   { radius: 14,  rays: 1500, bounces: 1 },
     pickup:  { radius: 6,   rays: 300,  bounces: 0 },
     hum:     { radius: 4,   rays: 160,  bounces: 0 },
+    dartThrow: { radius: 2.5, rays: 60, bounces: 0 },  // a flick of the wrist: barely past arm's reach
+    dartStick: { radius: 3,   rays: 160, bounces: 0 },  // the dart biting in: shows where it landed
   };
   R.FLOOR_MULT = [1, 0.45, 2.0, 1.6];
+  // everyone's colour (name on the roster, and their sounds with flag playerColorSounds): 8 bright colours picked to be
+  // as far apart as possible (closest pair CIEDE2000 26) and clear of the pale cyan your own sounds use. Players pick
+  // first; bots take what's left. Keep in sync with HUMAN_COLORS in server/src/index.js.
+  R.PALETTE = ['#ff4d58', '#ff851a', '#ffd11a', '#94ff1a', '#42f0cd', '#1ac2ff', '#8989f5', '#ff1ad1'];
+  // the first palette colour nobody in `actors` (except `self`) has; cycles once all 8 are taken
+  R.freeColor = function (actors, self) {
+    const used = new Set();
+    for (const a of actors || []) if (a && a !== self && a.color) used.add(a.color);
+    const free = R.PALETTE.find((c) => !used.has(c));
+    return free || R.PALETTE[used.size % R.PALETTE.length];
+  };
   // R.sound(kind, x,y,z, actor, extra) — extra may contain mult, dir, cone, source, or overrides
   R.sound = function (kind, x, y, z, actor, extra) {
     const base = R.SOUNDS[kind] || { radius: 5, rays: 200, bounces: 0 };

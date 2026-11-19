@@ -21,7 +21,6 @@
   const DEG = Math.PI / 180;
 
   const NAMES = ['Vesper', 'Moth', 'Hollow', 'Static', 'Wren', 'Cinder', 'Gauge', 'Lark', 'Mute', 'Sable'];
-  const COLORS = ['#ff5a3c', '#ffb43c', '#ff3c8c', '#c46bff', '#ff8a5a', '#e8e04a', '#ff6f6f', '#ffa0d0', '#d07a3c', '#b0ff5a'];
 
   // Personalities tweak thresholds. All distances in m, times in s.
   const PERS = {
@@ -49,7 +48,7 @@
   // localization quality multiplier per sound kind (lower = easier to pinpoint)
   const KIND_LOC = {
     gunshot: 0.5, death: 0.8, hurt: 0.75, click: 0.8, sprint: 0.8, step: 1.0, crouch: 0.6,
-    reload: 0.7, melee: 0.5, pickup: 0.9, impact: 1.0, ping: 0.6,
+    reload: 0.7, melee: 0.5, pickup: 0.9, impact: 1.0, ping: 0.6, dartThrow: 0.9, dartStick: 0.8,
   };
 
   const T = (R.bots = {
@@ -142,7 +141,7 @@
 
   function makeBot(i, name) {
     const persName = PERS_ORDER[i % PERS_ORDER.length];
-    const b = R.makeActor({ name, isBot: true, color: COLORS[i % COLORS.length] });
+    const b = R.makeActor({ name, isBot: true, color: R.freeColor(R.actors) }); // a colour no one else has
     b.persona = persName;
     b.brain = newBrain(persName);
     b.moveMode = 'idle';

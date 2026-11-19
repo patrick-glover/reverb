@@ -23,6 +23,8 @@ const newRoom = async () => (await (await fetch(BASE + '/api/rooms', { method: '
   A.send({ t: 'settings', settings: { botFill: true, map: 2, timeLimit: 2 } }); await sleep(150);
   A.send({ t: 'start' }); await sleep(400);
   A.send({ t: 'ready' }); B.send({ t: 'ready' }); await sleep(500);
+  for (let i = 0; i < 80 && !(A.last && A.last.cd === 0); i++) await sleep(100); // the 5 s countdown
+  await sleep(200);
   const bId = B.start.you, bCid = B.welcome.cid, actorsBefore = A.last.a.length;
   B.ws.close(); await sleep(300);                                         // no bye: like a refresh
   const away = A.lobby.players.find((p) => p.cid === bCid);

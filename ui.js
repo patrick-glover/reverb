@@ -15,16 +15,23 @@
     dim: 'rgba(170,215,235,0.55)',
     faint: 'rgba(150,200,225,0.28)',
     red: '#ff3b3b',
+    gold: '#ffd34d',
     redSoft: 'rgba(255,60,60,',
   };
   const SENS_MIN = 0.0006, SENS_MAX = 0.0066, SENS_DEF = 0.0022, SENS_STEP = 0.0002;
   const HURT_FADE = 1.2;
+  const COMBO_GAP = 0.6, MULTI_GAP = 4; // s
+  const MULTI_NAMES = ['', '', 'DOUBLE KILL', 'TRIPLE KILL', 'QUAD KILL', 'RAMPAGE'];
 
   const U = (R.ui = {
     t: 0,
     hot: [],             // clickable rects rebuilt each draw: {x,y,w,h,fn,drag}
     hurts: [],           // {ax, az, rel, t, amt}
     hitT: 0, hitHead: false, killT: 0,
+    hitAt: -9, combo: 0,  // last hit time and hits in a row (each within COMBO_GAP of the last)
+    killAt: -9, multi: 0, // last kill time and kills in a row (each within MULTI_GAP)
+    killMsg: null,       // {name, head, knife, multi, t}: the banner under the crosshair
+    dmgNums: [],         // {amt, head, t, dx}: floating damage numbers
     kick: 0,             // crosshair bloom from own shots
     dragging: null,
     fps: 0, fpsShown: 0, fpsAt: 0, // smoothed frame rate, and the number on screen (updated twice a second)
@@ -77,11 +84,24 @@
         if (U.hurts.length > 8) U.hurts.shift();
       } else if (P && e.attacker === P) {
         U.hitT = 0.22; U.hitHead = e.part === 'head';
+        U.combo = U.t - U.hitAt < COMBO_GAP ? U.combo + 1 : 1;
+        U.hitAt = U.t;
+        U.dmgNums.push({ amt: Math.round(e.amount || 0), head: e.part === 'head', t: U.t, dx: (Math.random() - 0.5) * 14 });
+        if (U.dmgNums.length > 6) U.dmgNums.shift();
       }
     });
-    R.bus.on('kill', (e) => { if (e && R.player && e.killer === R.player && e.victim !== R.player) U.killT = 0.55; });
+    R.bus.on('kill', (e) => {
+      if (!e || !R.player || e.killer !== R.player || e.victim === R.player) return;
+      U.killT = 0.55;
+      U.multi = U.t - U.killAt < MULTI_GAP ? U.multi + 1 : 1;
+      U.killAt = U.t;
+      U.killMsg = { name: nameOf(e.victim), head: !!e.headshot, knife: e.weapon === 'knife', multi: U.multi, t: U.t };
+    });
     R.bus.on('shot', (e) => { if (e && e.actor === R.player) U.kick = Math.min(14, U.kick + 7); });
-    R.bus.on('match:start', () => { U.hurts.length = 0; U.hitT = U.killT = U.kick = 0; });
+    R.bus.on('match:start', () => {
+      U.hurts.length = 0; U.hitT = U.killT = U.kick = 0;
+      U.hitAt = U.killAt = -9; U.combo = U.multi = 0; U.killMsg = null; U.dmgNums.length = 0;
+    });
   }
 
   // ---------------- helpers ----------------
@@ -118,6 +138,7 @@
     return null;
   }
   function fmtTime(s) {
+    if (s === Infinity) return '∞';
     s = Math.max(0, Math.ceil(s));
     return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
   }
@@ -343,11 +364,17 @@
       drawVignette(ctx, P);
       if (P.alive && !passive) drawCrosshair(ctx, P, cx, cy);
       drawDamageArcs(ctx, P, cx, cy);
+      drawHitFx(ctx, cx, cy);
       drawHealth(ctx, P, H);
       drawAmmo(ctx, P, W, H);
     }
     drawTop(ctx, G, W);
     drawFeed(ctx, G, W);
+    const goAge = R.net && R.net.inMatch ? (performance.now() - R.net.goAt) / 1000 : 9;
+    if (goAge >= 0 && goAge < 0.9) {
+      const sc = 1 + 0.5 * Math.exp(-goAge / 0.08);
+      text(ctx, 'GO', cx, cy - 70, Math.round(40 * sc), C.cyan, 'center', goAge > 0.6 ? (0.9 - goAge) / 0.3 : 1, 10);
+    }
   }
 
   function drawVignette(ctx, P) {
@@ -398,17 +425,59 @@
       ctx.globalAlpha = 0.15; ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2); ctx.stroke();
       ctx.globalAlpha = 0.8; ctx.beginPath(); ctx.arc(cx, cy, 13, -Math.PI / 2, -Math.PI / 2 + f * Math.PI * 2); ctx.stroke();
     }
-    // hit marker
+    // hit marker: pops in big and settles; grows with hits in a row; gold on a headshot, red on a kill
     const pm = typeof P.hitMarkerT === 'number' ? P.hitMarkerT : typeof P.lastHitMarker === 'number' && P.lastHitMarker < 1 ? P.lastHitMarker : 0;
     const pk = typeof P.killMarkerT === 'number' ? P.killMarkerT : 0;
     const hm = Math.max(U.hitT / 0.22, U.killT / 0.55, clamp(pm / 0.2, 0, 1), clamp(pk / 0.5, 0, 1));
     if (hm > 0) {
-      const k = U.killT > 0 || pk > 0, s0 = k ? 7 : 6, s1 = k ? 15 : 11;
-      ctx.strokeStyle = k || U.hitHead ? C.red : C.white;
-      ctx.globalAlpha = clamp(hm, 0, 1); ctx.lineWidth = k ? 2 : 1.5;
+      const k = U.killT > 0 || pk > 0;
+      const age = U.t - (k ? U.killAt : U.hitAt);
+      const pop = 1 + (k ? 0.9 : 0.6) * Math.exp(-Math.max(0, age) / 0.045) + Math.min(4, Math.max(0, U.combo - 1)) * 0.07;
+      const s0 = (k ? 7 : 5.5) * pop, s1 = (k ? 17 : 12) * pop;
+      const col = k ? C.red : U.hitHead ? C.gold : C.white;
+      ctx.save();
+      ctx.strokeStyle = col; ctx.shadowColor = col; ctx.shadowBlur = k ? 10 : U.hitHead ? 7 : 3;
+      ctx.globalAlpha = clamp(hm * 1.3, 0, 1); ctx.lineWidth = k ? 2.6 : U.hitHead ? 2.2 : 1.8;
       for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) line(ctx, cx + sx * s0, cy + sy * s0, cx + sx * s1, cy + sy * s1);
+      // kill: a ring bursts outward; headshot hit: a small gold ring
+      const ringT = k ? 0.4 : U.hitHead ? 0.22 : 0;
+      if (ringT && age < ringT) {
+        const f = age / ringT;
+        ctx.globalAlpha = (1 - f) * 0.85; ctx.lineWidth = k ? 2 : 1.5;
+        ctx.beginPath(); ctx.arc(cx, cy, (k ? 12 : 9) + f * (k ? 30 : 14), 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.restore();
     }
     ctx.globalAlpha = 1;
+  }
+
+  // floating damage numbers beside the crosshair, and the kill banner under it (shown while dead too)
+  function drawHitFx(ctx, cx, cy) {
+    const NUM_LIFE = 0.75;
+    for (const n of U.dmgNums) {
+      const age = U.t - n.t;
+      if (age > NUM_LIFE || age < 0) continue;
+      const f = age / NUM_LIFE;
+      const sc = 1 + 0.5 * Math.exp(-age / 0.05);
+      text(ctx, String(n.amt), cx + 24 + n.dx + age * 18, cy - 16 - age * 46, Math.round((n.head ? 14 : 12) * sc),
+        n.head ? C.gold : C.white, 'left', (1 - f * f) * 0.95, 1, '600');
+    }
+    const m = U.killMsg;
+    if (!m) return;
+    const LIFE = m.multi > 1 ? 2.2 : 1.6, age = U.t - m.t;
+    if (age > LIFE || age < 0) { U.killMsg = null; return; }
+    const a = age > LIFE - 0.4 ? (LIFE - age) / 0.4 : 1;
+    const pop = 1 + 0.35 * Math.exp(-age / 0.07);
+    const y = cy + 54;
+    const verb = m.knife ? 'KNIFED' : 'ELIMINATED';
+    text(ctx, verb + '  ' + m.name, cx, y, Math.round(12 * pop), C.white, 'center', 0.92 * a, 3, '600');
+    let y2 = y + 20;
+    if (m.head) { text(ctx, 'HEADSHOT', cx, y2, Math.round(11 * pop), C.gold, 'center', 0.95 * a, 4, '600'); y2 += 18; }
+    if (m.multi > 1) {
+      const name = MULTI_NAMES[Math.min(m.multi, MULTI_NAMES.length - 1)];
+      const mp = 1 + 0.6 * Math.exp(-age / 0.09);
+      text(ctx, name, cx, y2 + 6, Math.round(18 * mp), C.red, 'center', a, 5);
+    }
   }
 
   // relative screen angle (0 = ahead, +pi/2 = right) of a world point from the player
@@ -603,7 +672,12 @@
   function drawDeath(ctx, G) {
     const W = R.screen.w, H = R.screen.h, P = R.player;
     overlay(ctx, 0.3);
-    if (P && P.netWaiting) { text(ctx, 'JOINING THE MATCH', W / 2, H * 0.42, 13, C.cyan, 'center', 0.6 + 0.4 * Math.sin(U.t * 4), 6); return; }
+    if (P && P.netWaiting) {
+      const cd = R.net && R.net.countdown > 0 ? R.net.countdown : 0;
+      if (cd > 0) drawCountdown(ctx, W / 2, H * 0.42, cd, 'GET READY');
+      else text(ctx, 'JOINING THE MATCH', W / 2, H * 0.42, 13, C.cyan, 'center', 0.6 + 0.4 * Math.sin(U.t * 4), 6);
+      return;
+    }
     const d = G.lastDeath || {};
     const k = d.killer && d.killer !== P ? d.killer : null;
     const y = H * 0.36;
@@ -629,8 +703,31 @@
     hot(cx - w / 2 - 8, y - 12, w + 16, 24, () => setPerf(!perfOn));
   }
 
+  // big countdown number with a label above it; the number pops at each new second
+  function drawCountdown(ctx, x, y, cd, label) {
+    const n = Math.ceil(cd), frac = n - cd; // 0 just as the number appears
+    text(ctx, label, x, y - 46, 11, C.dim, 'center', 1, 6);
+    text(ctx, String(n), x, y, Math.round(54 * (1 + 0.35 * Math.exp(-frac / 0.08))), C.white, 'center', 0.4 + 0.6 * (1 - frac), 4);
+  }
+
+  // online, before your first click: not a pause, the way into the match
+  function drawDeploy(ctx, G) {
+    const W = R.screen.w, H = R.screen.h, N = R.net;
+    overlay(ctx, 0.62);
+    const cd = N.countdown > 0 ? N.countdown : 0;
+    text(ctx, (G.mapName ? G.mapName().toUpperCase() : ''), W / 2, H * 0.22, 11, C.dim, 'center', 1, 6);
+    text(ctx, 'CLICK TO DEPLOY', W / 2, H * 0.32, 24, C.cyan, 'center', 0.75 + 0.25 * Math.sin(U.t * 3.2), 8);
+    if (cd > 0) drawCountdown(ctx, W / 2, H * 0.52, cd, 'MATCH STARTS IN');
+    else text(ctx, 'match in progress · you spawn when you click', W / 2, H * 0.46, 12, C.dim, 'center', 1, 2);
+    const kl = G.killLimit, tl = G.matchTime;
+    text(ctx, 'FIRST TO ' + kl + '  ·  ' + (tl === Infinity ? 'NO TIME LIMIT' : Math.round((tl || 0) / 60) + ' MIN'), W / 2, H * 0.62, 11, C.faint, 'center', 1, 4);
+    drawControls(ctx, W / 2, H * 0.68, 0.75);
+    text(ctx, 'Q  —  leave the room', W / 2, H - 40, 11, C.dim, 'center', 1, 2);
+  }
+
   function drawPause(ctx, G) {
     const W = R.screen.w, H = R.screen.h;
+    if (R.net && R.net.inMatch && R.player && R.player.netWaiting) { drawDeploy(ctx, G); return; }
     overlay(ctx, 0.7);
     let y = H * 0.2;
     text(ctx, 'PAUSED', W / 2, y, 24, C.white, 'center', 0.95, 10, '200');
@@ -646,7 +743,7 @@
     text(ctx, net ? 'Q  —  leave the room' : 'Q  —  quit to menu', W / 2, y, 11, C.dim, 'center', 1, 2);
     if (net && net.isHost()) text(ctx, 'X  —  end the match for everyone', W / 2, y + 20, 11, C.dim, 'center', 1, 2);
     if (net) text(ctx, 'ONLINE · ROOM ' + net.code + ' · ' + Math.round(net.rtt || 0) + ' MS  —  the match keeps going while you\'re paused', W / 2, H - 40, 10, C.cyan, 'center', 0.7, 2);
-    text(ctx, (G.mapName ? G.mapName().toUpperCase() : '') + '  ·  ' + fmtTime(G.timeLeft || 0) + ' left', W / 2, H - 22, 10, C.faint, 'center', 1, 2);
+    text(ctx, (G.mapName ? G.mapName().toUpperCase() : '') + '  ·  ' + (G.timeLeft === Infinity ? 'no time limit' : fmtTime(G.timeLeft || 0) + ' left'), W / 2, H - 22, 10, C.faint, 'center', 1, 2);
   }
 
   function drawOver(ctx, G) {

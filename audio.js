@@ -31,6 +31,8 @@
     death:   { level: 0.85, send: 0.5,  self: 0.8 },
     pickup:  { level: 0.5,  send: 0.3,  self: 0.6 },
     hum:     { level: 0.35, send: 0.2,  self: 1 },
+    dartThrow: { level: 0.45, send: 0.2, self: 0.7 },
+    dartStick: { level: 0.6,  send: 0.4, self: 1 },
     _:       { level: 0.5,  send: 0.3,  self: 0.7 },
   };
 
@@ -343,14 +345,25 @@
     try { return !W.los(L.x, L.y, L.z, x + dx * k, y + dy * k, z + dz * k); } catch (e) { return false; }
   }
 
+  // hits in a row (each within 0.6 s) climb in pitch; kills in a row (each within 4 s) add notes
+  let comboN = 0, comboAt = -9, multiN = 0, multiAt = -9;
+  const wallT = () => (typeof performance !== 'undefined' ? performance.now() / 1000 : 0);
   function onDamage(e) {
     if (!ctx || !e || !R.player) return;
-    if (e.attacker === R.player && e.target !== R.player) playUi(hitMarker, e.part === 'head' ? 1 : 0);
+    if (e.attacker === R.player && e.target !== R.player) {
+      const t = wallT();
+      comboN = t - comboAt < 0.6 ? comboN + 1 : 1; comboAt = t;
+      playUi(hitMarker, { head: e.part === 'head', combo: comboN });
+    }
   }
   function onKill(e) {
     if (!ctx || !e || !R.player) return;
     if (e.victim === R.player) playUi(youDied, 0);
-    else if (e.killer === R.player) playUi(killConfirm, e.headshot ? 1 : 0);
+    else if (e.killer === R.player) {
+      const t = wallT();
+      multiN = t - multiAt < 4 ? multiN + 1 : 1; multiAt = t;
+      playUi(killConfirm, { head: !!e.headshot, multi: multiN });
+    }
   }
 
   // non-spatial UI voice (stings, heartbeat): high priority
@@ -621,6 +634,21 @@
       }
       return len;
     },
+    dartThrow(v, t) {
+      // wrist flick: a quick airy whoosh rising in pitch, with a soft release tick
+      noise(v, t, { g: 0.5, a: 0.015, d: 0.11, type: 'bandpass', f: 900, f1: 4200, sw: 0.1, Q: 3 });
+      noise(v, t, { g: 0.25, a: 0.0005, d: 0.01, type: 'bandpass', f: 2600, Q: 4 });
+      return 0.16;
+    },
+    dartStick(v, t) {
+      // the tip biting in (sharp tick + small thud), then the sonar head arming: a rising two-note chirp
+      const p = rnd(0.92, 1.08);
+      noise(v, t, { g: 0.8, a: 0.0004, d: 0.014, type: 'bandpass', f: 3400 * p, Q: 3 });
+      tone(v, t, { g: 0.35, a: 0.001, d: 0.06, f: 260 * p, f1: 140 });
+      tone(v, t + 0.07, { g: 0.13, a: 0.004, d: 0.07, f: 1180, f1: 1260, sw: 0.06 });
+      tone(v, t + 0.15, { g: 0.13, a: 0.004, d: 0.1, f: 1400, f1: 1480, sw: 0.08 });
+      return 0.28;
+    },
     melee(v, t) {
       // swish: bandpass noise sweeping up then down
       noise(v, t, { g: 0.6, a: 0.07, d: 0.14, type: 'bandpass', f: 500, f1: 3200, sw: 0.08, f2b: 900, sw2: 0.12, Q: 2.2 });
@@ -665,18 +693,38 @@
   A._sfx = SFX;
 
   // ---------------- UI stings ----------------
-  function hitMarker(v, t, head) {
-    tone(v, t, { g: 0.32, a: 0.0006, d: 0.035, f: head ? 4200 : 3300, type: 'triangle' });
-    noise(v, t, { g: 0.25, a: 0.0004, d: 0.012, type: 'highpass', f: 5000 });
-    if (head) tone(v, t + 0.045, { g: 0.2, a: 0.0006, d: 0.05, f: 5600, type: 'sine' });
+  function hitMarker(v, t, o) {
+    o = typeof o === 'object' && o ? o : { head: !!o, combo: 1 };
+    const up = Math.pow(2, Math.min(4, (o.combo || 1) - 1) / 12); // a semitone higher per hit in a row
+    // crisp tick + a meaty low thock underneath, so it lands in the chest as well as the ears
+    tone(v, t, { g: 0.34, a: 0.0006, d: 0.04, f: (o.head ? 4200 : 3300) * up, type: 'triangle' });
+    noise(v, t, { g: 0.3, a: 0.0004, d: 0.014, type: 'highpass', f: 5000 });
+    tone(v, t, { g: 0.42, a: 0.0008, d: 0.07, f: 190 * up, f1: 95 });
+    noise(v, t, { g: 0.22, a: 0.0006, d: 0.03, type: 'bandpass', f: 1300, Q: 2 });
+    if (o.head) {
+      // headshot: a bright little bell on top
+      tone(v, t + 0.03, { g: 0.24, a: 0.0006, d: 0.22, f: 5600, type: 'sine' });
+      tone(v, t + 0.03, { g: 0.08, a: 0.0006, d: 0.16, f: 8400, type: 'sine' });
+      return 0.28;
+    }
     return 0.12;
   }
-  function killConfirm(v, t, head) {
+  function killConfirm(v, t, o) {
+    o = typeof o === 'object' && o ? o : { head: !!o, multi: 1 };
+    tone(v, t, { g: 0.5, a: 0.002, d: 0.16, f: 120, f1: 50 });                  // body blow
+    noise(v, t, { g: 0.25, a: 0.001, d: 0.06, type: 'lowpass', f: 900 });
     tone(v, t, { g: 0.22, a: 0.004, d: 0.22, f: 880, type: 'triangle' });
     tone(v, t + 0.08, { g: 0.22, a: 0.004, d: 0.35, f: 1318.5, type: 'triangle' });
-    if (head) tone(v, t + 0.16, { g: 0.14, a: 0.004, d: 0.4, f: 1760, type: 'sine' });
-    tone(v, t, { g: 0.3, a: 0.002, d: 0.12, f: 110, f1: 60 });
-    return 0.6;
+    let end = 0.6;
+    if (o.head) { tone(v, t + 0.16, { g: 0.16, a: 0.004, d: 0.45, f: 1760, type: 'sine' }); end = 0.65; }
+    // kills in a row: climb a major arpeggio past the usual two notes
+    const steps = [1760, 2217.5, 2637, 3520];
+    for (let i = 0; i < Math.min(steps.length, (o.multi || 1) - 1); i++) {
+      const at = 0.16 + (o.head ? 0.08 : 0) + i * 0.08;
+      tone(v, t + at, { g: 0.15, a: 0.004, d: 0.4, f: steps[i], type: 'triangle' });
+      end = Math.max(end, at + 0.45);
+    }
+    return end;
   }
   function youDied(v, t) {
     tone(v, t, { g: 0.7, a: 0.003, d: 0.6, f: 70, f1: 30 });
@@ -689,7 +737,19 @@
     tone(v, t + 0.17, { g: 0.22 * g, a: 0.006, d: 0.14, f: 56, f1: 38 });
     return 0.35;
   }
-  A._ui = { hitMarker, killConfirm, youDied, heartbeat };
+  // match countdown: a short blip on 3, 2, 1 and a brighter two-tone at GO
+  function countTick(v, t) {
+    tone(v, t, { g: 0.28, a: 0.002, d: 0.12, f: 880, type: 'triangle' });
+    return 0.16;
+  }
+  function countGo(v, t) {
+    tone(v, t, { g: 0.3, a: 0.002, d: 0.35, f: 1760, type: 'triangle' });
+    tone(v, t, { g: 0.14, a: 0.002, d: 0.35, f: 2637, type: 'sine' });
+    tone(v, t, { g: 0.35, a: 0.002, d: 0.15, f: 110, f1: 55 });
+    return 0.4;
+  }
+  A.countdown = (go) => playUi(go ? countGo : countTick, 0);
+  A._ui = { hitMarker, killConfirm, youDied, heartbeat, countTick, countGo };
   // empty gun: a small dry hammer click, only in your own ears
   function dryClick(v, t) {
     noise(v, t, { g: 0.4, a: 0.0003, d: 0.012, type: 'highpass', f: 3500 });

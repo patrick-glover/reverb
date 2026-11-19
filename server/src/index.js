@@ -123,11 +123,13 @@ const log = (o) => console.log(JSON.stringify(o));
 const DEFAULTS = { map: 0, maxPlayers: 6, botFill: true, botSkill: 0.5, killLimit: 15, timeLimit: 6 };
 // quick play rooms: fixed settings, no host, matches back to back on a random map
 const QUICK = { ...DEFAULTS, maxPlayers: 6 };
-const LIMITS = { map: [0, 2], maxPlayers: [2, 8], botSkill: [0, 1], killLimit: [1, 50], timeLimit: [2, 20] };
-const HUMAN_COLORS = ['#7fe8ff', '#8affc1', '#a9b8ff', '#e9f59a', '#ffffff', '#7fb4ff', '#c2ffe9', '#d6c2ff'];
+const LIMITS = { map: [0, 2], maxPlayers: [2, 8], botSkill: [0, 1], killLimit: [1, 50], timeLimit: [0, 20] }; // timeLimit 0 = no time limit
+// players pick from these; bots in a match take the rest. Keep in sync with R.PALETTE in core.js.
+const HUMAN_COLORS = ['#ff4d58', '#ff851a', '#ffd11a', '#94ff1a', '#42f0cd', '#1ac2ff', '#8989f5', '#ff1ad1'];
 // sounds a client makes itself and forwards (everything else the room generates)
 const CLIENT_SOUNDS = new Set(['step', 'sprint', 'crouch', 'click']);
 const OVER_TO_LOBBY = 8; // seconds the room stays 'over' before it returns to the lobby
+const COUNTDOWN = 5; // seconds from a match starting to play starting: everyone clicks in, nobody moves, bots wait
 const MAX_MSGS_PER_SEC = 120;
 // a socket that drops without saying 'bye' (refresh, wifi blip, closed laptop) keeps its seat, actor and score this
 // long; the browser comes back with the rejoin key from its welcome message
@@ -214,7 +216,7 @@ export class Room extends DurableObject {
       cid: this.nextCid++, ws,
       name: 'Player',
       uid: (url.searchParams.get('uid') || '').slice(0, 40),
-      color: this.freeColor(), actor: null, joinedAt: Date.now(),
+      color: this.freeColor(url.searchParams.get('color')), actor: null, joinedAt: Date.now(),
       winStart: Date.now(), winCount: 0, rtt: 0,
       key: randomKey(), heldTimer: 0, lastActive: Date.now(),
     };
@@ -311,8 +313,10 @@ export class Room extends DurableObject {
     while (taken.has((stem + i).toUpperCase())) i++;
     return stem + i;
   }
-  freeColor() {
-    const used = new Set([...this.clients.values()].map((c) => c.color));
+  // the wanted colour if it's in the palette and nobody else has it, else the first free one
+  freeColor(want, cid) {
+    const used = new Set([...this.clients.values()].filter((c) => c.cid !== cid).map((c) => c.color));
+    if (HUMAN_COLORS.includes(want) && !used.has(want)) return want;
     return HUMAN_COLORS.find((x) => !used.has(x)) || HUMAN_COLORS[0];
   }
   send(c, o) { try { c.ws.send(JSON.stringify(o)); } catch (e) { /* closed */ } }
@@ -321,7 +325,7 @@ export class Room extends DurableObject {
   broadcastLobby() {
     this.broadcast({
       t: 'lobby', code: this.code, phase: this.phase, host: this.hostCid, settings: this.settings, quick: this.pub,
-      players: [...this.clients.values()].map((c) => ({ cid: c.cid, name: c.name, color: c.color, rtt: Math.round(c.rtt), away: c.ws ? 0 : 1 })),
+      players: [...this.clients.values()].map((c) => ({ cid: c.cid, name: c.name, color: c.color, rtt: Math.round(c.rtt), away: c.ws ? 0 : 1, rdy: c.ready ? 1 : 0 })),
     });
   }
 
@@ -351,6 +355,15 @@ export class Room extends DurableObject {
     }
     this.broadcastLobby();
     this.beat(true);
+    this.startIfAllReady(); // the one holding it up may just have left
+  }
+
+  // lobby ready check: a hosted room starts by itself once every player has readied up (the host can start sooner)
+  startIfAllReady() {
+    if (this.pub || this.phase !== 'lobby' || !this.clients.size || this.env.ROOMS_DISABLED) return;
+    for (const c of this.clients.values()) if (!c.ready) return;
+    log({ evt: 'all_ready', room: this.code, humans: this.clients.size });
+    this.startMatch();
   }
 
   onMessage(c, data) {
@@ -377,6 +390,21 @@ export class Room extends DurableObject {
         if (c.cid !== this.hostCid || this.phase === 'playing') return;
         this.settings = sanitizeSettings({ ...this.settings, ...(m.settings || {}) });
         this.broadcastLobby();
+        break;
+      case 'color': { // pick a palette colour (taken ones are refused)
+        const col = String(m.c || '').toLowerCase();
+        if (!HUMAN_COLORS.includes(col) || col === c.color || this.freeColor(col, c.cid) !== col) { this.broadcastLobby(); return; }
+        c.color = col;
+        if (c.actor) c.actor.color = col;
+        this.broadcastLobby();
+        if (this.sim) { this.recolorBots(); this.sendRoster(); }
+        break;
+      }
+      case 'lready': // lobby ready toggle
+        if (this.phase !== 'lobby') return;
+        c.ready = !!m.on;
+        this.broadcastLobby();
+        this.startIfAllReady();
         break;
       case 'start': // only from the lobby: during results the old sim is still alive
         if (c.cid !== this.hostCid || this.phase !== 'lobby') return;
@@ -429,6 +457,16 @@ export class Room extends DurableObject {
     return R;
   }
 
+  // players' colours win: a bot wearing a player's colour (or another bot's) moves to a free one
+  recolorBots() {
+    const R = this.sim;
+    if (!R) return;
+    for (const b of R.actors) {
+      if (!b.isBot) continue;
+      if (R.actors.some((o) => o !== b && o.color === b.color && (!o.isBot || R.actors.indexOf(o) < R.actors.indexOf(b)))) b.color = R.freeColor(R.actors, b);
+    }
+  }
+
   makeHuman(c) {
     const R = this.sim;
     const a = R.makeActor({ name: c.name, isBot: false, color: c.color });
@@ -445,7 +483,7 @@ export class Room extends DurableObject {
     const humans = [];
     for (const c of this.clients.values()) humans.push(this.makeHuman(c));
     G.humans = humans;
-    G.rules = { killLimit: S.killLimit, matchTime: S.timeLimit * 60 };
+    G.rules = { killLimit: S.killLimit, matchTime: S.timeLimit * 60 }; // 0 = no limit
     G.botCount = S.botFill ? Math.max(0, S.maxPlayers - humans.length) : 0;
     R.bots.skill = S.botSkill;
     R.time = 0;
@@ -454,6 +492,8 @@ export class Room extends DurableObject {
     for (const a of humans) hold(a); // out of play until they click in (see onReady)
     this.events.length = 0; // initial spawns are in the start message
     this.phase = 'playing';
+    this.countdown = COUNTDOWN;
+    for (const c of this.clients.values()) c.ready = false; // next lobby starts un-ready
     this.tick = 0;
     this.matchStartedAt = Date.now();
     this.sendRoster('start');
@@ -469,11 +509,11 @@ export class Room extends DurableObject {
   }
   sendRoster(kind) {
     const R = this.sim, G = R.game;
-    const base = { t: kind || 'roster', actors: this.roster(), map: this.settings.map, killLimit: G.killLimit, matchTime: G.matchTime };
+    const base = { t: kind || 'roster', actors: this.roster(), map: this.settings.map, killLimit: G.killLimit, matchTime: wireTime(G.matchTime) };
     if (kind !== 'start') { this.broadcast(base); return; }
     // each client learns which actor is theirs, plus every actor's starting pose
     const poses = R.actors.map((a) => [a.id, rnd(a.x), rnd(a.z), rnd(a.yaw), a.spawnSeq || 0]);
-    for (const c of this.clients.values()) this.send(c, { ...base, you: c.actor ? c.actor.id : 0, poses });
+    for (const c of this.clients.values()) this.send(c, { ...base, you: c.actor ? c.actor.id : 0, poses, cd: this.countdown || 0 });
   }
 
   joinMatch(c) {
@@ -485,11 +525,12 @@ export class Room extends DurableObject {
       if (bots.length && R.actors.length >= this.settings.maxPlayers) this.removeActor(bots.find((b) => !b.alive) || bots[bots.length - 1]);
     }
     R.actors.push(a);
+    this.recolorBots();
     a.kills = 0; a.deaths = 0;
     hold(a);
-    const base = { t: 'start', actors: this.roster(), map: this.settings.map, killLimit: G.killLimit, matchTime: G.matchTime };
+    const base = { t: 'start', actors: this.roster(), map: this.settings.map, killLimit: G.killLimit, matchTime: wireTime(G.matchTime) };
     const poses = R.actors.map((x) => [x.id, rnd(x.x), rnd(x.z), rnd(x.yaw), x.spawnSeq || 0]);
-    this.send(c, { ...base, you: a.id, poses, timeLeft: G.timeLeft });
+    this.send(c, { ...base, you: a.id, poses, timeLeft: isFinite(G.timeLeft) ? G.timeLeft : -1, cd: this.countdown || 0 });
     this.sendRoster();
   }
 
@@ -497,9 +538,9 @@ export class Room extends DurableObject {
   rejoinMatch(c) {
     const R = this.sim, G = R.game, a = c.actor;
     hold(a);
-    const base = { t: 'start', actors: this.roster(), map: this.settings.map, killLimit: G.killLimit, matchTime: G.matchTime };
+    const base = { t: 'start', actors: this.roster(), map: this.settings.map, killLimit: G.killLimit, matchTime: wireTime(G.matchTime) };
     const poses = R.actors.map((x) => [x.id, rnd(x.x), rnd(x.z), rnd(x.yaw), x.spawnSeq || 0]);
-    this.send(c, { ...base, you: a.id, poses, timeLeft: G.timeLeft });
+    this.send(c, { ...base, you: a.id, poses, timeLeft: isFinite(G.timeLeft) ? G.timeLeft : -1, cd: this.countdown || 0 });
   }
 
   leaveMatch(c) {
@@ -548,7 +589,12 @@ export class Room extends DurableObject {
     const R = this.sim;
     if (!R) return;
     const G = R.game;
-    if (this.phase === 'playing') {
+    if (this.phase === 'playing' && this.countdown > 0) {
+      // countdown: the world holds still; humans who click in now spawn the moment it ends (onReady)
+      this.countdown = Math.max(0, this.countdown - dt);
+      this.tick++;
+      if (this.tick % 3 === 0 || this.countdown === 0) this.sendSnapshot();
+    } else if (this.phase === 'playing') {
       R.time += dt;
       G.update(dt);
       this.tick++;
@@ -592,7 +638,7 @@ export class Room extends DurableObject {
     }
     let pk = 0;
     G.pickups.forEach((p, i) => { if (p.active) pk |= 1 << i; });
-    const base = { t: 's', tm: Math.round(R.time * 1000) / 1000, tl: Math.round(G.timeLeft * 10) / 10, a: acts, pk, e: this.events };
+    const base = { t: 's', cd: this.countdown > 0 ? Math.round(this.countdown * 10) / 10 : 0, tm: Math.round(R.time * 1000) / 1000, tl: isFinite(G.timeLeft) ? Math.round(G.timeLeft * 10) / 10 : -1, a: acts, pk, e: this.events };
     // every 2 s: each human's ping (as their browser last reported it), by actor id, for the scoreboard
     if (this.tick % (TICK_HZ * 2) === 1) {
       base.pg = {};
@@ -724,6 +770,9 @@ export class Room extends DurableObject {
     if (this.pub) matcher(this.env).report(this.code, { humans: this.humanCount(), max: this.settings.maxPlayers, phase: this.phase }).catch(() => {});
   }
 }
+
+// match length on the wire: JSON has no Infinity, so an unlimited match travels as 0 (and timeLeft as -1)
+function wireTime(t) { return isFinite(t) ? t : 0; }
 
 // a human who hasn't clicked into the match yet: dead to the sim, never respawned until onReady
 function hold(a) {
