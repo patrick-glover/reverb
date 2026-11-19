@@ -35,7 +35,7 @@
       help: 'On: loud sounds re-emit dimmer dots from doorways and corners into the rooms beyond, and a sound out of sight is heard (by you and bots) from the opening it comes round. Off: straight rays only, heard from the true position.' },
     { key: 'directivity', group: 'Acoustics', label: 'Gunshots louder in front', type: 'bool', def: true, when: 'live',
       help: 'On: a gunshot reaches about twice as far ahead of the gun as behind it, for dots, audio and bot hearing. Off: the same in every direction.' },
-    { key: 'playerColorSounds', group: 'Echo', label: 'Everyone\'s sounds in their color', type: 'bool', def: false, when: 'live',
+    { key: 'playerColorSounds', group: 'Echo', label: 'Everyone\'s sounds in their color', type: 'bool', def: true, when: 'live',
       help: 'On: every sound anyone else makes, bot or human (shots, steps, clicks, knife, darts), paints in the color their name shows in on the scoreboard. Off: everyone else paints in the red-orange enemy color; only players\' dart pings use their color.' },
     { key: 'edges', group: 'Echo', label: 'Prop edge highlights', type: 'bool', def: true, when: 'live',
       apply: (v) => R.echo && (R.echo.EDGES = v) },
