@@ -23,6 +23,13 @@
     { "tag": "v1", "new_sqlite_classes": ["Room", "Stats"] },
     { "tag": "v2", "new_sqlite_classes": ["Matcher"] }
   ],
+  // per-IP limits (approximate, per Cloudflare location; see limited() in src/index.js). Periods must be 10 or 60 s.
+  // A browser's rejoin loop makes ~1 lookup + 1 connect every 1-2 s for 25 s, which fits under these.
+  "ratelimits": [
+    { "name": "RL_CREATE", "namespace_id": "2001", "simple": { "limit": 12, "period": 60 } },  // POST /api/rooms, /api/quick
+    { "name": "RL_LOOKUP", "namespace_id": "2002", "simple": { "limit": 60, "period": 60 } },  // GET /api/rooms/:code, /api/quick
+    { "name": "RL_CONNECT", "namespace_id": "2003", "simple": { "limit": 40, "period": 60 } }  // WebSocket connects
+  ],
   "observability": { "enabled": true },
   "vars": {
     // origins allowed to create/join rooms ("null" = the game opened from file://)

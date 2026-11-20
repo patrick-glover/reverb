@@ -40,13 +40,20 @@ More detail in [Monitoring](#monitoring) and [Costs and scaling](#costs-and-scal
   A tick costs about 2 ms at 30 Hz with 7 bots (99% of ticks under 4 ms; echo tracing is capped at 3 ms).
 - **Browsers own their movement.** Position, look, velocity, crouch and move mode go up when they change (at most
   20 Hz, with a 4 Hz keepalive). The room accepts it only as far as a distance budget allows (it builds at 7.5 m/s,
-  capped at 6 m so a stalled connection catches up), pushes players out of walls, and works out sprint and crouch
-  from the speed it granted.
+  capped at 6 m so a stalled connection catches up), sweeps the move in 0.1 m steps so a claim can't cross a wall,
+  and works out sprint and crouch from the speed it granted. Height is capped at a jump above what you stand on, and
+  after 1.5 s in the air the room puts you back on the ground (still counted as airborne for spread).
 - **Forwarded sounds are checked.** Steps and clicks come from the browser, so the room rate-limits them per kind
   (a click per 0.5 s, steps in bursts of 3 at 0.25 s), keeps them within 1 m of the sender, clamps their loudness to
   the floor-material range, and drops clicks without a direction.
 - **Actions are predicted, then resolved by the room.** Fire, knife, dart and reload play their sound and spend
-  ammo/cooldown locally at once; the room raycasts and deals damage with its own positions.
+  ammo/cooldown locally at once; the room raycasts and deals damage with its own positions. The room times each
+  player's actions on its own clock: one may arrive a little early (60 ms for fire, 150 ms knife/dart, 300 ms for a
+  reload to finish), but the time skipped is owed and repaid by later late ones, so a client running faster cooldowns
+  is held to the real rate after a shot or two.
+- **Flooding is cut off.** Over 60 messages in a second the rest are dropped; three seconds over in a row, or 150 in
+  one second, closes the socket (4001). Name, colour, ready and settings changes go to the whole room, so each client
+  gets 6 at once and then 4 a second.
 - **Sounds, not dots, cross the wire.** Every sound is a small event (`kind, x, y, z, actor, mult, dir`) and each browser
   traces its own echoes. Your own steps, clicks, shots, reloads and knife swings are made locally and skipped when the
   room echoes them back. Other players' sounds are coloured like bots (red): everyone else is an enemy.
@@ -202,10 +209,14 @@ saving at scale (see `ROADMAP.md`).
 
 ### What breaks first, in order
 
-1. **Spend from abuse.** Idle rooms close on their own, but nothing rate-limits creating rooms, so a script that
-   keeps sending movement can still hold them. One held room costs $0.0058 an hour; 10,000 cost $58 an hour on the
-   Paid plan. Set spend limits when you upgrade, use `ROOMS_DISABLED` if a bill runs away, and add per-IP limits on
-   create, lookup and connect (Workers Rate Limiting binding; Turnstile on create if bots start making rooms).
+1. **Spend from abuse.** Idle rooms close on their own, and the Worker limits each IP (Workers Rate Limiting,
+   `ratelimits` in `wrangler.jsonc`, approximate and per Cloudflare location): 12 room creations or quick-play
+   requests a minute, 60 lookups, 40 WebSocket connects. Over that is a 429. A refused request is still a Worker
+   request, though, so on the Free plan (100k a day) a WAF rate-limiting rule on `api.playreverb.com` (dashboard →
+   Security → WAF → Rate limiting rules; the Free plan has one) is the layer that stops a flood before the Worker runs.
+   A script that keeps sending movement can still hold rooms open: one held room costs $0.0058 an hour, 10,000 cost
+   $58 an hour on the Paid plan. Set spend limits when you upgrade, use `ROOMS_DISABLED` if a bill runs away, and add
+   Turnstile on create if bots start making rooms.
 2. **The Stats object is a single point.** Every room beats every 10 s, plus events. Past ~2k live rooms that is a few
    hundred requests/s into one object. Move event counting to Workers Analytics Engine (no single writer, SQL API for
    the console) and shard live-room tracking (e.g. 16 shards by code hash, console sums them).
@@ -231,7 +242,6 @@ site is on a CDN already.
 
 - No kick, no team modes, no spectating. Quick play is one global pool: no regions yet (rooms are made near the
   first player, so a later player across an ocean gets their ping).
-- Idle rooms are not closed and nothing is rate-limited yet (see What breaks first).
 - No lag compensation: you hit where the room has the target, not where you saw it.
 - A held seat (30 s after a drop) is out of play: no bot fills it until it expires.
 - Gameplay dev flags (`fireInterval`, `diffraction`, …) are server defaults online. A client's own copies only change

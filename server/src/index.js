@@ -41,6 +41,7 @@ export default {
 
     if (p === '/api/rooms' && req.method === 'POST') {
       if (!originOk(origin, env)) return json({ error: 'origin not allowed' }, 403, cors);
+      if (await limited(env.RL_CREATE, req)) return tooMany(cors);
       // kill switch: `wrangler secret put ROOMS_DISABLED` (any value) stops new rooms; running rooms finish
       if (env.ROOMS_DISABLED) return json({ error: 'online play is paused, try again later' }, 503, cors);
       for (let tries = 0; tries < 8; tries++) {
@@ -51,13 +52,20 @@ export default {
     }
 
     if (p === '/api/quick' && req.method === 'GET') {
-      // summary() fallback: a Stats object still on the previous deploy's code has no playing() yet
-      const st = stats(env);
-      const n = await st.playing().catch(async () => (await st.summary()).live);
-      return json({ players: n.players, rooms: n.rooms }, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
+      if (await limited(env.RL_LOOKUP, req)) return tooMany(cors);
+      // every menu polls this: answer from this isolate's copy for ONLINE_TTL instead of asking the one Stats object
+      // each time (a Worker's Cache-Control header alone caches nothing)
+      if (!onlineCache || Date.now() - onlineCache.at > ONLINE_TTL) {
+        // summary() fallback: a Stats object still on the previous deploy's code has no playing() yet
+        const st = stats(env);
+        const n = await st.playing().catch(async () => (await st.summary()).live);
+        onlineCache = { at: Date.now(), body: { players: n.players, rooms: n.rooms } };
+      }
+      return json(onlineCache.body, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
     }
     if (p === '/api/quick' && req.method === 'POST') {
       if (!originOk(origin, env)) return json({ error: 'origin not allowed' }, 403, cors);
+      if (await limited(env.RL_CREATE, req)) return tooMany(cors);
       if (env.ROOMS_DISABLED) return json({ error: 'online play is paused, try again later' }, 503, cors);
       const found = await matcher(env).find();
       if (found) return json({ code: found }, 200, cors);
@@ -75,15 +83,30 @@ export default {
       if (m[2]) {
         if (req.headers.get('Upgrade') !== 'websocket') return new Response('expected websocket', { status: 426 });
         if (!originOk(origin, env)) return new Response('origin not allowed', { status: 403 });
+        if (await limited(env.RL_CONNECT, req)) return new Response('too many requests', { status: 429 });
         const fwd = new Request(req.url, req);
         fwd.headers.set('X-Room-Code', code);
         return room(env, code).fetch(fwd);
       }
+      if (await limited(env.RL_LOOKUP, req)) return tooMany(cors);
       return json(await room(env, code).info(), 200, cors);
     }
     return json({ error: 'not found' }, 404, cors);
   },
 };
+
+// per-IP rate limits (wrangler.jsonc `ratelimits`). They stop one script from waking rooms and spending the daily
+// allowance; a refused request still counts as a Worker request, so a WAF rate-limiting rule on api.playreverb.com is
+// the layer in front of this. Loopback (wrangler dev, the test scripts) is never limited.
+async function limited(rl, req) {
+  if (!rl) return false;
+  const ip = req.headers.get('CF-Connecting-IP') || '';
+  if (!ip || ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return false;
+  try { return !(await rl.limit({ key: ip })).success; } catch (e) { return false; }
+}
+const tooMany = (cors) => json({ error: 'too many requests, slow down' }, 429, { ...cors, 'Retry-After': '30' });
+const ONLINE_TTL = 15000;
+let onlineCache = null;
 
 const room = (env, code) => env.ROOMS.get(env.ROOMS.idFromName(code));
 const stats = (env) => env.STATS.get(env.STATS.idFromName('global'));
@@ -130,7 +153,13 @@ const HUMAN_COLORS = ['#ff4d58', '#ff851a', '#ffd11a', '#94ff1a', '#42f0cd', '#1
 const CLIENT_SOUNDS = new Set(['step', 'sprint', 'crouch', 'click']);
 const OVER_TO_LOBBY = 8; // seconds the room stays 'over' before it returns to the lobby
 const COUNTDOWN = 5; // seconds from a match starting to play starting: everyone clicks in, nobody moves, bots wait
-const MAX_MSGS_PER_SEC = 120;
+// flood guard: an honest client sends ~35 messages a second at most (movement 20 Hz, steps, fire, ping). Over
+// MAX_MSGS_PER_SEC the rest of that second is dropped; FLOOD_STRIKES seconds over it in a row, or FLOOD_HARD in one
+// second, closes the socket (4001, never retried). Every message is billed on arrival, dropped or not, so a script
+// has to be disconnected, not just ignored. A burst after a stalled connection is a single second over.
+const MAX_MSGS_PER_SEC = 60, FLOOD_STRIKES = 2, FLOOD_HARD = 150;
+// lobby messages (name, colour, ready, settings) each go out to the whole room: a token bucket per client
+const LOBBY_RATE = [0.25, 6]; // seconds per token, burst
 // a socket that drops without saying 'bye' (refresh, wifi blip, closed laptop) keeps its seat, actor and score this
 // long; the browser comes back with the rejoin key from its welcome message
 const HOLD_MS = 30000;
@@ -143,12 +172,18 @@ const MATCH_IDLE_MS = 3 * 60000, LOBBY_IDLE_MS = 10 * 60000, IDLE_CHECK_MS = 300
 // Budget accrues at a little over sprint speed, so packet rate buys nothing. The cap covers about 0.9 s of sprinting
 // so a connection that stalls and then delivers a burst is followed in full (the old check allowed an 8 m hop too).
 const JUMP_MAX = 0.95; // m: a jump peaks at about 0.84 (player.js JUMP_V, GRAV)
+// a jump is ~0.65 s in the air; jumping off furniture adds a fall. Off the ground longer than this, the room puts you
+// back on it (no hovering over cover) but keeps you counted as airborne (shots stay wild).
+const AIR_MAX = 1.5;
 const MOVE_RATE = 7.5, MOVE_CAP = 6, CROUCH_MAX = 2.6, SPRINT_MIN = 5.5;
 // client-forwarded sounds: token bucket per kind {seconds per token, burst}. click matches CLICK_COOLDOWN (0.55 s);
 // footsteps come once per stride (0.3 s sprinting at the fastest) and may arrive bunched up.
 const SOUND_RATE = { click: [0.5, 1], step: [0.25, 3], sprint: [0.25, 3], crouch: [0.25, 3] };
 const SOUND_MULT = [0.45, 2.0]; // R.FLOOR_MULT range
 const SOUND_REACH = 1.0;        // metres a forwarded sound may sit from where the sender last said it was
+// action pacing: the room times each player's fire/knife/dart/reload on its own clock. A request may come up to `tol`
+// seconds early (network jitter), but that time is owed and paid back by later requests that come late; once the owed
+// time passes 2 x tol, early requests are refused. Honest jitter nets out, a client with a faster cooldown runs dry.
 
 export class Room extends DurableObject {
   constructor(ctx, env) {
@@ -367,15 +402,26 @@ export class Room extends DurableObject {
   }
 
   onMessage(c, data) {
-    // crude flood guard: a 30 Hz client sends ~35 msgs/s
     const now = Date.now();
-    if (now - c.winStart > 1000) { c.winStart = now; c.winCount = 0; }
-    if (++c.winCount > MAX_MSGS_PER_SEC) { if (c.winCount > MAX_MSGS_PER_SEC * 3) { c.bye = true; c.ws.close(4001, 'too many messages'); } return; }
+    if (now - c.winStart > 1000) {
+      // a whole second over the limit is a strike; a second back under it clears them
+      c.strikes = c.winCount > MAX_MSGS_PER_SEC ? (c.strikes || 0) + 1 : 0;
+      c.winStart = now; c.winCount = 0;
+    }
+    if (++c.winCount > MAX_MSGS_PER_SEC) {
+      if (c.winCount > FLOOD_HARD || (c.strikes || 0) >= FLOOD_STRIKES) {
+        if (!c.bye) log({ evt: 'flood_closed', room: this.code, cid: c.cid, n: c.winCount, strikes: c.strikes || 0 });
+        c.bye = true;
+        try { c.ws.close(4001, 'too many messages'); } catch (e) { /* gone */ }
+      }
+      return;
+    }
     if (typeof data !== 'string' || data.length > 2000) return;
     let m;
     try { m = JSON.parse(data); } catch (e) { return; }
     if (!m || typeof m.t !== 'string') return;
     if (m.t !== 'ping' && m.t !== 'rtt' && m.t !== 'st' && m.t !== 'snd') c.lastActive = now; // 'st' counts only when it changes (onState)
+    if ((m.t === 'name' || m.t === 'color' || m.t === 'lready' || m.t === 'settings') && !bucket(c, 'lobby', LOBBY_RATE, now / 1000)) return;
     switch (m.t) {
       case 'ping': this.send(c, { t: 'pong', c: m.c }); break;
       case 'bye': c.bye = true; break; // leaving on purpose: no seat to hold when the socket closes
@@ -676,16 +722,19 @@ export class Room extends DurableObject {
     if (sk !== c.lastSt) { c.lastSt = sk; c.lastActive = t; } // keepalives repeat the same claim: not activity
     a._cx = x; a._cz = z; a._cseq = a.spawnSeq | 0; // the client's own idea of where it is (this life); see onClientSound
     a._budget = Math.min(MOVE_CAP, (a._budget == null ? MOVE_CAP : a._budget) + MOVE_RATE * el);
-    // height (jumping, standing on furniture): no higher than a jump above the highest top under them
+    // height (jumping, standing on furniture): no higher than a jump above the highest top under them, and back on
+    // that top after AIR_MAX in the air
     const W = this.sim.world;
-    a.y = Math.min(clampNum(m.y, 0, 3, 0), W.groundAt(a, 3) + JUMP_MAX);
+    const wantY = clampNum(m.y, 0, 3, 0), g = W.groundAt(a, 3), up = wantY > g + 0.05;
+    a._airT = up ? (a._airT || 0) + el : 0;
+    const grounded = up && a._airT > AIR_MAX;
+    a.y = grounded ? g : Math.min(wantY, g + JUMP_MAX);
     const dx = x - a.x, dz = z - a.z, d = Math.hypot(dx, dz);
     let moved = 0;
     if (d > 0) {
       const k = Math.min(1, a._budget / d);
       const ox = a.x, oz = a.z;
-      a.x += dx * k; a.z += dz * k;
-      this.sim.world._resolve(a); // keep them out of walls
+      W.moveActor(a, dx * k, dz * k); // swept in 0.1 m steps: a claim on the far side of a wall stops at the wall
       moved = Math.hypot(a.x - ox, a.z - oz);
       a._budget -= d * k;
     }
@@ -700,7 +749,7 @@ export class Room extends DurableObject {
     // speed over just this message, so spread (weapons.speedOf) drops the moment you stop instead of ~0.5 s later.
     // Faking it means actually holding still for a message.
     a._spdNow = moved / Math.max(el, 0.05);
-    a.air = a.y > W.groundAt(a, a.y) + 0.05; // shots in the air are wild (weapons.spreadDeg)
+    a.air = grounded || a.y > W.groundAt(a, a.y) + 0.05; // shots in the air are wild (weapons.spreadDeg)
     a.crouch = !!m.cr && spd < CROUCH_MAX; // no small hitbox at running speed
     let mm = ['idle', 'walk', 'sprint', 'crouch'][m.mm | 0] || 'idle';
     if (spd > SPRINT_MIN) mm = 'sprint';                 // sprinting is sprinting, whatever the client says
@@ -722,12 +771,7 @@ export class Room extends DurableObject {
     const hasDir = Array.isArray(m.d) && m.d.length === 3 && m.d.every(Number.isFinite);
     if (m.k === 'click' && !hasDir) return; // a click is a forward cone, never all-round
     // token bucket per kind: an honest client can't beat the click cooldown or its own stride
-    const [per, burst] = SOUND_RATE[m.k], now = Date.now() / 1000;
-    const b = (c.sndBucket || (c.sndBucket = {}));
-    const s = b[m.k] || (b[m.k] = { tok: burst, at: now });
-    s.tok = Math.min(burst, s.tok + (now - s.at) / per); s.at = now;
-    if (s.tok < 1) return;
-    s.tok -= 1;
+    if (!bucket(c, m.k, SOUND_RATE[m.k], Date.now() / 1000)) return;
     const ex = { mult: m.k === 'click' ? 1 : clampNum(m.m, SOUND_MULT[0], SOUND_MULT[1], 1) };
     if (hasDir) ex.dir = m.d;
     this.sim.sound(m.k, x, y, z, a, ex);
@@ -736,28 +780,37 @@ export class Room extends DurableObject {
   onAction(c, m) {
     const a = c.actor, R = this.sim;
     if (!a || this.phase !== 'playing' || !a.alive) return;
-    if (Number.isFinite(m.yaw)) a.yaw = m.yaw;
+    if (Number.isFinite(m.yaw)) a.yaw = clampNum(m.yaw, -10, 10, a.yaw);
     if (Number.isFinite(m.pitch)) a.pitch = clampNum(m.pitch, -1.5, 1.5, 0);
     if (m.cr != null) a.crouch = !!m.cr && (a._spd || 0) < CROUCH_MAX;
-    const W = R.weapons, w = W.ensure(a);
+    const W = R.weapons, C = W.C, w = W.ensure(a), now = Date.now() / 1000;
+    const reloading = w.reloadT > 0;
     switch (m.a) {
       case 'fire':
-        // the client already checked its own cooldowns; forgive a little jitter between its clock and ours, no more
-        // (a client with a faster local fireInterval flag gets its extra shots dropped here)
-        if (w.fireT > 0 && w.fireT < 0.06) w.fireT = 0;
-        if (w.reloadT > 0 && w.reloadT < 0.3) { w.reloadT = 0; w.ammo = W.C.MAG; }
-        W.fire(a);
+        // the client already checked its own cooldowns; the room's clock decides (see pace). A reload the client
+        // thinks is done may finish now, then the shot needs its own fire cooldown to be up.
+        if (w.reloadT > 0) {
+          if (!pace(w, 'reload', now, 0.3, w.reloadT)) return;
+          w.reloadT = 0; w.ammo = C.MAG;
+        }
+        if (!pace(w, 'fire', now, 0.06, w.fireT)) return;
+        w.fireT = 0;
+        if (W.fire(a)) paced(w, 'fire', now, C.FIRE_INTERVAL);
         break;
       case 'knife':
-        if (w.knifeT > 0 && w.knifeT < 0.15) w.knifeT = 0;
-        W.knife(a);
+        if (!pace(w, 'knife', now, 0.15, w.knifeT)) return;
+        w.knifeT = 0;
+        if (W.knife(a) !== false) paced(w, 'knife', now, C.KNIFE_COOLDOWN);
         break;
       case 'dart':
-        if (w.dartT > 0 && w.dartT < 0.15) w.dartT = 0;
-        W.throwDart(a);
+        if (!pace(w, 'dart', now, 0.15, w.dartT)) return;
+        w.dartT = 0;
+        if (W.throwDart(a)) paced(w, 'dart', now, C.DART_COOLDOWN);
         break;
       case 'reload': W.reload(a); break;
     }
+    // a reload started just now (asked for, or the last bullet): its clock starts here
+    if (!reloading && w.reloadT > 0) paced(w, 'reload', now, C.RELOAD);
   }
 
   // ---- stats heartbeat
@@ -774,6 +827,24 @@ export class Room extends DurableObject {
 // match length on the wire: JSON has no Infinity, so an unlimited match travels as 0 (and timeLeft as -1)
 function wireTime(t) { return isFinite(t) ? t : 0; }
 
+// action pacing (see the note at the top): may this action go ahead at `now` (s, wall clock)? An early one adds what
+// it skipped to the debt, a late one pays the debt down. Refused requests change nothing.
+// With no record yet (first use this life) the sim's own cooldown `simT` decides, with the same jitter allowance.
+function pace(w, key, now, tol, simT) {
+  const P = (w._pace || (w._pace = {})), s = P[key];
+  if (!s) return !(simT > tol);
+  const early = s.readyAt - now; // > 0: before the cooldown is up
+if (early > tol || (early > 0 && s.owe + early > tol * 2)) return false;
+  s.owe = Math.max(0, s.owe + early);
+  return true;
+}
+// an action happened at `now`: the next one is due after `cd` seconds
+function paced(w, key, now, cd) {
+  const P = (w._pace || (w._pace = {}));
+  const s = P[key] || (P[key] = { owe: 0, readyAt: -Infinity });
+  s.readyAt = now + cd;
+}
+
 // a human who hasn't clicked into the match yet: dead to the sim, never respawned until onReady
 function hold(a) {
   a.alive = false; a._dead = true; a.waiting = true; a.respawnT = 1e9; a.health = 100;
@@ -785,6 +856,15 @@ function randomMap(not) {
   let m = Math.floor(Math.random() * n);
   if (n > 1 && m === not) m = (m + 1 + Math.floor(Math.random() * (n - 1))) % n;
   return m;
+}
+// token bucket on a client: [seconds per token, burst]; true (and a token spent) if there was one
+function bucket(c, key, [per, burst], now) {
+  const b = (c.buckets || (c.buckets = {}));
+  const s = b[key] || (b[key] = { tok: burst, at: now });
+  s.tok = Math.min(burst, s.tok + (now - s.at) / per); s.at = now;
+  if (s.tok < 1) return false;
+  s.tok -= 1;
+  return true;
 }
 function rnd(v) { return Math.round((v || 0) * 100) / 100; }
 function r3(v) { return Math.round((v || 0) * 1000) / 1000; }

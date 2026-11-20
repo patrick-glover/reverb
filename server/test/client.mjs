@@ -22,7 +22,7 @@ globalThis.window = globalThis;
 window.addEventListener = (t, f) => (handlers[t] = handlers[t] || []).push(f);
 globalThis.document = {
   addEventListener: (t, f) => (handlers['doc:' + t] = handlers['doc:' + t] || []).push(f),
-  createElement: () => mkEl(''), getElementById: (id) => (id.startsWith('mp_') ? (els[id] = els[id] || mkEl(id)) : null),
+  createElement: () => mkEl(''), querySelectorAll: () => [], getElementById: (id) => (id.startsWith('mp_') ? (els[id] = els[id] || mkEl(id)) : null),
   head: mkEl('head'), body: mkEl('body'), activeElement: null, exitPointerLock() {},
 };
 globalThis.location = { search: '', hostname: 'localhost', protocol: 'http:', pathname: '/', origin: 'http://localhost:8000' };
@@ -70,7 +70,7 @@ ok(G.state === 'paused', 'waiting for a click (paused) since pointer is not lock
 const P = R.player;
 ok(!P.alive && P.netWaiting, 'not spawned while on the click-to-play screen');
 R.input.locked = true; G.resume();
-for (let i = 0; i < 40 && !P.alive; i++) await sleep(50);
+for (let i = 0; i < 160 && !P.alive; i++) await sleep(50); // through the countdown
 ok(P.alive && !P.netWaiting && G.state === 'playing', 'spawned after clicking in');
 const rook = R.actors.find((a) => a !== P);
 ok(R.actors.length === 2 && rook && rook.name === 'Rook', 'actors: you + Rook proxy');
