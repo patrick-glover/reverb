@@ -16,6 +16,8 @@ Cloudflare: the site's records are DNS-only and point at GitHub Pages, which iss
 | Costs | `node tools/cost-model.js` |
 | Traffic alerts | ntfy push when live players pass 3, 10, 25, 50, 100… or rooms pass 5, 20, 50… (urgent if rooms outnumber players). Topic in `server/.ntfy-topic`, set as the `NTFY_TOPIC` secret; subscribe to it in the ntfy app. `wrangler secret delete NTFY_TOPIC` turns alerts off |
 | Idle rooms | Closed automatically: a match ends after 3 min with no human moving or acting, a room closes after 10 min of nobody doing anything (`MATCH_IDLE_MS`, `LOBBY_IDLE_MS` in `server/src/index.js`) |
+| WAF rate limit | A Cloudflare WAF rate-limiting rule on `api.playreverb.com` (set in the dashboard, not in this repo): about 100 requests per 10 s per IP, then blocked for 10 s at the edge, before the Worker runs or counts. The Worker's own per-route limits (`ratelimits` in `wrangler.jsonc`) sit behind it. Checked 2026-11-20: a 200-request burst was cut off after ~80 |
+| Player ids | Signed with the `PLAYER_ID_SECRET` secret. Rotating it (`wrangler secret put PLAYER_ID_SECRET`) gives every browser a new id, so unique-player counts restart |
 | Spend safety | Free plan today: no bill possible, online play just stops at the daily allowance until 00:00 UTC. On the Paid plan, set Billing → Spend limits for Workers and Durable Objects, plus a billing notification |
 
 More detail in [Monitoring](#monitoring) and [Costs and scaling](#costs-and-scaling).
