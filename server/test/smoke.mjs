@@ -21,7 +21,7 @@ function client(code, name) {
     if (m.t === 'start') { c.start = m; c.you = m.you; }
     if (m.t === 's') { c.snaps++; c.last = m; c.events.push(...m.e); }
     if (m.t === 'over') c.over = m;
-    if (m.t === 'error') console.log(name, 'error', m.msg);
+    if (m.t === 'error') { c.errs = (c.errs || []).concat(m.msg); }
   };
   c.send = (o) => ws.send(JSON.stringify(o));
   c.open = new Promise((r) => (ws.onopen = r));
@@ -54,6 +54,14 @@ ok(B.lobby.players.find((p) => p.cid === B.cid).color === '#ff1ad1', 'free colou
 B.send({ t: 'color', c: '#123456' });
 await sleep(200);
 ok(B.lobby.players.find((p) => p.cid === B.cid).color === '#ff1ad1', 'colour outside the palette refused');
+
+// names: a slur is refused everywhere, swearing is fine in a private room
+const bobName = () => B.lobby.players.find((p) => p.cid === B.cid).name;
+B.send({ t: 'name', name: 'n1gg3r' }); await sleep(200);
+ok(bobName() === 'Bob' && (B.errs || []).some((e) => /isn't allowed/.test(e)), 'a slur rename is refused');
+B.send({ t: 'name', name: 'Shit Lord' }); await sleep(200);
+ok(bobName() === 'Shit Lord', 'swearing is allowed in a private room');
+B.send({ t: 'name', name: 'Bob' }); await sleep(200);
 
 // ready up: one ready doesn't start it; both ready does
 B.send({ t: 'lready', on: true });

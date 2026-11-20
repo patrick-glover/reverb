@@ -90,6 +90,17 @@ you in. The browser retries quick play twice if the room it got is gone or full.
 `GET /api/quick` returns `{players, rooms}` (everyone online, public and private, cached 15 s). The menu shows
 "N PLAYERS ONLINE NOW" from it, only when N > 0.
 
+### Names
+
+Display names are moderated on the server (`server/src/names.js`). Slurs, hate and sexual-violence terms are refused
+in every room; general swearing and sexual words only in quick play (strangers), so friends in a private room can call
+themselves what they like. It sees through case, accents, Cyrillic/Greek look-alikes, digits for letters, separators
+between letters and stretched letters. Words that hide inside ordinary names (`ass`, `cock`, `rapist`, `coon`, …)
+only match as whole words, so "Cassidy", "Hancock" and "therapist" are fine. A refused name on joining becomes
+`Player`/`PlayerN` with a notice; a refused rename keeps the old name. Every refusal is logged as `name_blocked`
+(with the name and player id) in Workers Logs, which is where to look when tuning the lists. `node test/names.mjs`
+checks the matcher without a server.
+
 ### Host settings
 
 The first player in a room is host (it passes on if they leave). In the lobby the host sets: map, max players (2–8),
@@ -158,6 +169,7 @@ node test/fill.mjs     # bot fill, mid-match join/leave, full room
 node test/over.mjs     # match end and the return to the lobby (7 hard bots, kill limit 2)
 node test/host.mjs     # host ends the match, host closes the room
 node test/rejoin.mjs   # seat held 30 s after a drop: same cid, actor, score and host role; bye frees it (~35 s)
+node test/names.mjs    # name moderation: disguised slurs blocked, ordinary names that contain a bad word allowed (no server)
 node test/vis.mjs      # anti-wallhack: no position through a wall, a position in sight; signed player ids
 node test/quick.mjs    # quick play: straight into a match, no host, matched into the same room, full rooms skipped
                        # (run on a fresh dev server: leftover quick rooms get matched into)
@@ -256,7 +268,7 @@ site is on a CDN already.
 
 ## Known gaps
 
-- No kick, no team modes, no spectating. Quick play is one global pool: no regions yet (rooms are made near the
+- No kick or report (names are moderated, behaviour isn't), no team modes, no spectating. Quick play is one global pool: no regions yet (rooms are made near the
   first player, so a later player across an ocean gets their ping).
 - No lag compensation: you hit where the room has the target, not where you saw it.
 - A held seat (30 s after a drop) is out of play: no bot fills it until it expires.

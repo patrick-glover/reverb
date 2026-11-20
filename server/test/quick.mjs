@@ -5,8 +5,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fails = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) fails++; };
 const quick = async () => (await (await fetch(BASE + '/api/quick', { method: 'POST', ...O })).json()).code;
 const cl = (code, name) => { const ws = new WebSocket(`${WS}/api/rooms/${code}/ws?name=${name}&v=2`, O);
-  const c = { ws, roster: null, start: null, starts: 0, over: null, lobby: null, closed: null, send: (o) => ws.send(JSON.stringify(o)) };
-  ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.t === 'start') { c.start = m; c.starts++; c.roster = m.actors; } if (m.t === 'roster') c.roster = m.actors; if (m.t === 'over') c.over = m; if (m.t === 'lobby') c.lobby = m; };
+  const c = { ws, errs: [], roster: null, start: null, starts: 0, over: null, lobby: null, closed: null, send: (o) => ws.send(JSON.stringify(o)) };
+  ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.t === 'start') { c.start = m; c.starts++; c.roster = m.actors; } if (m.t === 'roster') c.roster = m.actors; if (m.t === 'over') c.over = m; if (m.t === 'lobby') c.lobby = m; if (m.t === 'error') c.errs.push(m.msg); };
   ws.onclose = (e) => { c.closed = e; };
   c.open = new Promise((r) => (ws.onopen = r)); return c; };
 const bots = (c) => c.roster.filter((a) => a.isBot).length;
@@ -22,8 +22,10 @@ A.send({ t: 'settings', settings: { maxPlayers: 2 } }); A.send({ t: 'end' }); aw
 ok(A.lobby.settings.maxPlayers === 6 && !A.over, 'host-only messages are ignored');
 const code2 = await quick();
 ok(code2 === code1, 'the next player is matched into the same room');
-const B = cl(code2, 'Ben'); await B.open; await sleep(500);
+const B = cl(code2, 'Fuuuck'); await B.open; await sleep(500);
 ok(B.start && bots(A) === 4, 'they join mid-match and take a bot slot');
+const bName = B.lobby.players[B.lobby.players.length - 1].name;
+ok(/^Player\d*$/.test(bName) && B.errs.some((e) => /isn't allowed/.test(e)), 'a sweary name is replaced in quick play (' + bName + ')');
 const live = await (await fetch(BASE + '/api/quick')).json();
 ok(live.players >= 2, 'GET /api/quick counts players (' + live.players + ')');
 // fill the room: 4 more reservations, then the 7th asker gets a new room

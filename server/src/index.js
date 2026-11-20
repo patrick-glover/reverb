@@ -15,6 +15,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { createSim } from './sim.gen.js';
 import { ADMIN_HTML } from './admin.js';
+import { nameAllowed } from './names.js';
 
 const CODE_CHARS = 'BCDFGHJKMNPQRSTVWXZ23456789'; // no vowels (no words), no 0/O/1/I/L
 const CODE_LEN = 4;
@@ -299,13 +300,16 @@ export class Room extends DurableObject {
       winStart: Date.now(), winCount: 0, rtt: 0,
       key: randomKey(), heldTimer: 0, lastActive: Date.now(),
     };
-    c.name = this.uniqueName(cleanName(url.searchParams.get('name')) || 'Player', c.cid);
+    const asked = cleanName(url.searchParams.get('name')) || 'Player';
+    const nameOk = this.nameOk(asked, c);
+    c.name = this.uniqueName(nameOk ? asked : 'Player', c.cid);
     this.clients.set(c.cid, c);
     if (!this.pub && (!this.hostCid || !this.clients.has(this.hostCid))) this.hostCid = c.cid;
 
     this.listen(c, ws);
     if (!this.idleTimer) this.idleTimer = setInterval(() => this.checkIdle(), IDLE_CHECK_MS);
     this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL, rk: c.key, pt: req.headers.get('X-Player-Token') || undefined });
+    if (!nameOk) this.send(c, { t: 'error', msg: `that name isn't allowed here, so you're ${c.name}` });
     if (this.phase === 'playing') this.joinMatch(c);
     else if (this.pub && this.phase === 'lobby') this.startMatch(); // quick play: straight into a match with bots
     this.broadcastLobby();
@@ -379,6 +383,13 @@ export class Room extends DurableObject {
       log({ evt: 'room_closed_idle', room: this.code, idleSecs: Math.round(idle / 1000) });
       this.closeAll('the room closed after 10 minutes with nobody playing');
     }
+  }
+  // name moderation (names.js): slurs and hate nowhere, swearing not in quick play (strangers). Blocked names are
+  // logged, so the lists can be tuned from Workers Logs (evt name_blocked).
+  nameOk(name, c) {
+    if (nameAllowed(name, this.pub)) return true;
+    log({ evt: 'name_blocked', room: this.code, cid: c.cid, uid: c.uid, name, quick: this.pub });
+    return false;
   }
   // unique display names in a room (case-insensitive: the HUD upper-cases them); never a bot's name or "YOU"
   uniqueName(name, cid) {
@@ -472,6 +483,7 @@ export class Room extends DurableObject {
       case 'rtt': c.rtt = clampNum(m.ms, 0, 5000, 0); break;
       case 'name': {
         let n = cleanName(m.name);
+        if (n && !this.nameOk(n, c)) { this.send(c, { t: 'error', msg: "that name isn't allowed here" }); this.broadcastLobby(); return; }
         if (n) n = this.uniqueName(n, c.cid);
         if (n && n !== c.name) { c.name = n; if (c.actor) c.actor.name = n; this.broadcastLobby(); if (this.sim) this.sendRoster(); }
         break;

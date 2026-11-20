@@ -70,8 +70,8 @@ ok(G.state === 'paused', 'waiting for a click (paused) since pointer is not lock
 const P = R.player;
 ok(!P.alive && P.netWaiting, 'not spawned while on the click-to-play screen');
 R.input.locked = true; G.resume();
-for (let i = 0; i < 160 && !P.alive; i++) await sleep(50); // through the countdown
-ok(P.alive && !P.netWaiting && G.state === 'playing', 'spawned after clicking in');
+for (let i = 0; i < 160 && !(P.alive && G.state === 'playing'); i++) await sleep(50); // through the countdown (the state follows alive on the next frame)
+ok(P.alive && !P.netWaiting && G.state === 'playing', 'spawned after clicking in' + (P.alive && !P.netWaiting && G.state === 'playing' ? '' : ` (alive ${P.alive}, state ${G.state}, waiting ${P.netWaiting}, countdown ${N.countdown.toFixed(1)}, locked ${R.input.locked})`));
 const rook = R.actors.find((a) => a !== P);
 ok(R.actors.length === 2 && rook && rook.name === 'Rook', 'actors: you + Rook proxy');
 
