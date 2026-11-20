@@ -4,7 +4,7 @@
 //   POST /api/quick                 -> {code}            quick play: a public room with a free slot (made if none)
 //   GET  /api/quick                 -> {players, rooms}  how many people are in public and private rooms now
 //   GET  /api/rooms/:code           -> {open, players, max, phase}
-//   GET  /api/rooms/:code/ws?name=&uid=   WebSocket into the room
+//   GET  /api/rooms/:code/ws?name=&pt=    WebSocket into the room (pt: the signed player id from an earlier welcome)
 //   GET  /admin                     monitoring console (asks for ADMIN_TOKEN)
 //   GET  /api/admin/stats           JSON for the console (Authorization: Bearer ADMIN_TOKEN)
 //   GET  /health
@@ -19,7 +19,7 @@ import { ADMIN_HTML } from './admin.js';
 const CODE_CHARS = 'BCDFGHJKMNPQRSTVWXZ23456789'; // no vowels (no words), no 0/O/1/I/L
 const CODE_LEN = 4;
 const TICK_HZ = 30;
-const PROTOCOL = 1;
+const PROTOCOL = 2;
 
 // ---------------------------------------------------------------------------------------------------------
 // Worker entry
@@ -86,6 +86,10 @@ export default {
         if (await limited(env.RL_CONNECT, req)) return new Response('too many requests', { status: 429 });
         const fwd = new Request(req.url, req);
         fwd.headers.set('X-Room-Code', code);
+        // the room trusts these headers, so they are always set here (never the client's own)
+        const pid = await playerId(env, url.searchParams.get('pt'));
+        fwd.headers.set('X-Player-Id', pid.id);
+        if (pid.token) fwd.headers.set('X-Player-Token', pid.token); else fwd.headers.delete('X-Player-Token');
         return room(env, code).fetch(fwd);
       }
       if (await limited(env.RL_LOOKUP, req)) return tooMany(cors);
@@ -103,6 +107,37 @@ async function limited(rl, req) {
   const ip = req.headers.get('CF-Connecting-IP') || '';
   if (!ip || ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return false;
   try { return !(await rl.limit({ key: ip })).success; } catch (e) { return false; }
+}
+// Signed player ids. A browser keeps the token `<id>.<sig>` it was given in a welcome and sends it back as `pt`;
+// sig is HMAC-SHA256 of the id under the PLAYER_ID_SECRET secret, so ids can't be made up or borrowed, only issued.
+// That makes the id something bans, per-player limits and (later) accounts can key on. A missing or bad token gets a
+// fresh id. Without the secret nothing verifies, so every connection is a new player (and it's logged).
+const PID_RE = /^[0-9a-f]{32}$/;
+let pidKey = null, pidKeySecret = null, pidWarned = false;
+async function pidHmac(env) {
+  const secret = env.PLAYER_ID_SECRET;
+  if (!secret) return null;
+  if (pidKey && pidKeySecret === secret) return pidKey;
+  pidKey = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+  pidKeySecret = secret;
+  return pidKey;
+}
+const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+function unb64u(s) {
+  try { const b = atob(s.replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, (ch) => ch.charCodeAt(0)); } catch (e) { return null; }
+}
+async function playerId(env, token) {
+  const key = await pidHmac(env);
+  if (!key && !pidWarned) { pidWarned = true; log({ evt: 'pid_secret_missing' }); }
+  const [id, sig] = String(token || '').split('.');
+  if (key && PID_RE.test(id || '') && sig) {
+    const raw = unb64u(sig);
+    if (raw && await crypto.subtle.verify('HMAC', key, raw, new TextEncoder().encode('pid:' + id))) return { id };
+  }
+  const nid = randomKey();
+  if (!key) return { id: nid };
+  const nsig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('pid:' + nid));
+  return { id: nid, token: nid + '.' + b64u(nsig) };
 }
 const tooMany = (cors) => json({ error: 'too many requests, slow down' }, 429, { ...cors, 'Retry-After': '30' });
 const ONLINE_TTL = 15000;
@@ -150,7 +185,7 @@ const LIMITS = { map: [0, 2], maxPlayers: [2, 8], botSkill: [0, 1], killLimit: [
 // players pick from these; bots in a match take the rest. Keep in sync with R.PALETTE in core.js.
 const HUMAN_COLORS = ['#ff4d58', '#ff851a', '#ffd11a', '#94ff1a', '#42f0cd', '#1ac2ff', '#8989f5', '#ff1ad1'];
 // sounds a client makes itself and forwards (everything else the room generates)
-const CLIENT_SOUNDS = new Set(['step', 'sprint', 'crouch', 'click']);
+const CLIENT_SOUNDS = new Set(['click']); // footsteps are the room's own (see footsteps)
 const OVER_TO_LOBBY = 8; // seconds the room stays 'over' before it returns to the lobby
 const COUNTDOWN = 5; // seconds from a match starting to play starting: everyone clicks in, nobody moves, bots wait
 // flood guard: an honest client sends ~35 messages a second at most (movement 20 Hz, steps, fire, ping). Over
@@ -178,9 +213,18 @@ const AIR_MAX = 1.5;
 const MOVE_RATE = 7.5, MOVE_CAP = 6, CROUCH_MAX = 2.6, SPRINT_MIN = 5.5;
 // client-forwarded sounds: token bucket per kind {seconds per token, burst}. click matches CLICK_COOLDOWN (0.55 s);
 // footsteps come once per stride (0.3 s sprinting at the fastest) and may arrive bunched up.
-const SOUND_RATE = { click: [0.5, 1], step: [0.25, 3], sprint: [0.25, 3], crouch: [0.25, 3] };
+const SOUND_RATE = { click: [0.5, 1] };
 const SOUND_MULT = [0.45, 2.0]; // R.FLOOR_MULT range
 const SOUND_REACH = 1.0;        // metres a forwarded sound may sit from where the sender last said it was
+// footsteps the room makes from granted movement: one per stride, stride = nominal speed x interval (player.js M:
+// WALK 4.2, SPRINT 6.8, CROUCH 1.9, STEP_INT, GRAV; keep in sync)
+const STRIDE = { step: 4.2 * 0.42, sprint: 6.8 * 0.30, crouch: 1.9 * 0.6 }, GRAV = 16;
+// who sees whom (anti-wallhack): a client gets another actor's position only while it could see them. Checked every
+// tick by line of sight from its eye, from where it's heading (VIS_LEAD s ahead) and from VIS_SIDE m either side
+// (peeking a corner), to the other actor's feet, chest and head; or within VIS_NEAR m. A sighting holds VIS_HOLD ms
+// so a body half-in a doorway doesn't flicker. Sounds go to a client that could hear them (the audio's own reach:
+// radius x directivity x 1.15) or see where they were made.
+const VIS_LEAD = 0.25, VIS_SIDE = 0.5, VIS_NEAR = 2.5, VIS_HOLD = 600, SND_MARGIN = 2.5;
 // action pacing: the room times each player's fire/knife/dart/reload on its own clock. A request may come up to `tol`
 // seconds early (network jitter), but that time is owed and paid back by later requests that come late; once the owed
 // time passes 2 x tol, early requests are refused. Honest jitter nets out, a client with a faster cooldown runs dry.
@@ -243,14 +287,14 @@ export class Room extends DurableObject {
     // rejoin: the key matches a seat in this room (held, or one whose old socket we haven't seen die yet)
     const rk = url.searchParams.get('rk');
     const back = rk ? [...this.clients.values()].find((o) => o.key === rk) : null;
-    if (back) { this.rebind(back, ws); return new Response(null, { status: 101, webSocket: clientWs }); }
+    if (back) { this.rebind(back, ws, req.headers.get('X-Player-Token')); return new Response(null, { status: 101, webSocket: clientWs }); }
 
     if (this.humanCount() >= this.settings.maxPlayers) { reject('room is full'); return new Response(null, { status: 101, webSocket: clientWs }); }
 
     const c = {
       cid: this.nextCid++, ws,
       name: 'Player',
-      uid: (url.searchParams.get('uid') || '').slice(0, 40),
+      uid: req.headers.get('X-Player-Id') || '',
       color: this.freeColor(url.searchParams.get('color')), actor: null, joinedAt: Date.now(),
       winStart: Date.now(), winCount: 0, rtt: 0,
       key: randomKey(), heldTimer: 0, lastActive: Date.now(),
@@ -261,7 +305,7 @@ export class Room extends DurableObject {
 
     this.listen(c, ws);
     if (!this.idleTimer) this.idleTimer = setInterval(() => this.checkIdle(), IDLE_CHECK_MS);
-    this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL, rk: c.key });
+    this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL, rk: c.key, pt: req.headers.get('X-Player-Token') || undefined });
     if (this.phase === 'playing') this.joinMatch(c);
     else if (this.pub && this.phase === 'lobby') this.startMatch(); // quick play: straight into a match with bots
     this.broadcastLobby();
@@ -290,14 +334,14 @@ export class Room extends DurableObject {
   }
 
   // same seat, new socket: keeps cid (so host stays host), name, colour, actor and score
-  rebind(c, ws) {
+  rebind(c, ws, pt) {
     clearTimeout(c.heldTimer); c.heldTimer = 0;
     const old = c.ws;
     c.ws = ws; // set first: the old socket's close event is then ignored
     if (old) try { old.close(4003, 'opened in another tab'); } catch (e) { /* gone */ }
     c.winStart = Date.now(); c.winCount = 0; c.bye = false; c.lastActive = Date.now();
     this.listen(c, ws);
-    this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL, rk: c.key, rejoin: true });
+    this.send(c, { t: 'welcome', cid: c.cid, code: this.code, protocol: PROTOCOL, rk: c.key, rejoin: true, pt: pt || undefined });
     if (this.phase === 'playing') {
       if (c.actor) this.rejoinMatch(c); else this.joinMatch(c);
     }
@@ -485,20 +529,23 @@ export class Room extends DurableObject {
     const E = this.events;
     const id = (a) => (a ? a.id : 0);
     const r2 = (v) => Math.round(v * 100) / 100;
+    // each event keeps what sendSnapshot needs to decide who gets it (see VIS_*): w is what goes on the wire
     R.bus.on('sound', (ev) => {
       const base = R.SOUNDS[ev.kind];
       const mult = base ? r2(ev.radius / base.radius) : 1;
-      E.push(['s', ev.kind, r2(ev.x), r2(ev.y), r2(ev.z), id(ev.actor), mult, ev.dir ? ev.dir.map((v) => Math.round(v * 1000) / 1000) : 0]);
+      E.push({ w: ['s', ev.kind, r2(ev.x), r2(ev.y), r2(ev.z), id(ev.actor), mult, ev.dir ? ev.dir.map((v) => Math.round(v * 1000) / 1000) : 0], snd: ev, by: ev.actor || null });
     });
-    R.bus.on('damage', (e) => E.push(['d', id(e.target), id(e.attacker), e.amount, e.part, r2(e.x), r2(e.y), r2(e.z)]));
-    R.bus.on('kill', (e) => E.push(['k', id(e.victim), id(e.killer), e.weapon, e.headshot ? 1 : 0]));
+    R.bus.on('damage', (e) => E.push({ w: ['d', id(e.target), id(e.attacker), e.amount, e.part, r2(e.x), r2(e.y), r2(e.z)], tgt: e.target, att: e.attacker || null }));
+    R.bus.on('kill', (e) => E.push({ w: ['k', id(e.victim), id(e.killer), e.weapon, e.headshot ? 1 : 0] }));
     R.bus.on('spawn', (e) => {
       const a = e.actor;
       if (!a) return;
       a.spawnSeq = (a.spawnSeq || 0) + 1;
-      E.push(['sp', a.id, r2(a.x), r2(a.z), r2(a.yaw), a.spawnSeq]);
+      for (const c of this.clients.values()) if (c.seen) c.seen.delete(a.id); // a sighting doesn't follow you to a new spawn
+      a._air = false; a._lastY = a.y || 0; a._stepAcc = 0.5; // footsteps start fresh too
+      E.push({ w: ['sp', a.id, r2(a.x), r2(a.z), r2(a.yaw), a.spawnSeq], sp: a });
     });
-    R.bus.on('pickup', (e) => E.push(['p', id(e.actor), e.kind]));
+    // (pickups travel as the pk bits; who took one isn't sent, since the pickup's place would give them away)
     this.sim = R;
     return R;
   }
@@ -558,8 +605,8 @@ export class Room extends DurableObject {
     const base = { t: kind || 'roster', actors: this.roster(), map: this.settings.map, killLimit: G.killLimit, matchTime: wireTime(G.matchTime) };
     if (kind !== 'start') { this.broadcast(base); return; }
     // each client learns which actor is theirs, plus every actor's starting pose
-    const poses = R.actors.map((a) => [a.id, rnd(a.x), rnd(a.z), rnd(a.yaw), a.spawnSeq || 0]);
-    for (const c of this.clients.values()) this.send(c, { ...base, you: c.actor ? c.actor.id : 0, poses, cd: this.countdown || 0 });
+    // each client learns its own pose only; everyone else arrives in snapshots once they're in sight
+    for (const c of this.clients.values()) this.send(c, { ...base, you: c.actor ? c.actor.id : 0, poses: ownPose(c.actor), cd: this.countdown || 0 });
   }
 
   joinMatch(c) {
@@ -575,8 +622,7 @@ export class Room extends DurableObject {
     a.kills = 0; a.deaths = 0;
     hold(a);
     const base = { t: 'start', actors: this.roster(), map: this.settings.map, killLimit: G.killLimit, matchTime: wireTime(G.matchTime) };
-    const poses = R.actors.map((x) => [x.id, rnd(x.x), rnd(x.z), rnd(x.yaw), x.spawnSeq || 0]);
-    this.send(c, { ...base, you: a.id, poses, timeLeft: isFinite(G.timeLeft) ? G.timeLeft : -1, cd: this.countdown || 0 });
+    this.send(c, { ...base, you: a.id, poses: ownPose(a), timeLeft: isFinite(G.timeLeft) ? G.timeLeft : -1, cd: this.countdown || 0 });
     this.sendRoster();
   }
 
@@ -585,8 +631,7 @@ export class Room extends DurableObject {
     const R = this.sim, G = R.game, a = c.actor;
     hold(a);
     const base = { t: 'start', actors: this.roster(), map: this.settings.map, killLimit: G.killLimit, matchTime: wireTime(G.matchTime) };
-    const poses = R.actors.map((x) => [x.id, rnd(x.x), rnd(x.z), rnd(x.yaw), x.spawnSeq || 0]);
-    this.send(c, { ...base, you: a.id, poses, timeLeft: isFinite(G.timeLeft) ? G.timeLeft : -1, cd: this.countdown || 0 });
+    this.send(c, { ...base, you: a.id, poses: ownPose(a), timeLeft: isFinite(G.timeLeft) ? G.timeLeft : -1, cd: this.countdown || 0 });
   }
 
   leaveMatch(c) {
@@ -639,6 +684,7 @@ export class Room extends DurableObject {
       // countdown: the world holds still; humans who click in now spawn the moment it ends (onReady)
       this.countdown = Math.max(0, this.countdown - dt);
       this.tick++;
+      if (G.state === 'over') { this.countdown = 0; this.finishMatch(); return; } // the host ended it before GO
       if (this.tick % 3 === 0 || this.countdown === 0) this.sendSnapshot();
     } else if (this.phase === 'playing') {
       R.time += dt;
@@ -675,28 +721,88 @@ export class Room extends DurableObject {
     this.broadcastLobby();
   }
 
+  // Each client gets its own snapshot: full rows only for actors it can see (updateVis), short rows
+  // [id, flags, kills, deaths] for the rest, and only the events it could hear or see (see VIS_*).
   sendSnapshot() {
-    const R = this.sim, G = R.game;
-    const acts = [];
+    const R = this.sim, G = R.game, now = Date.now();
+    this.updateVis(now);
+    const full = new Map(), short = new Map();
     for (const a of R.actors) {
       const fl = (a.alive ? 1 : 0) | (a.crouch ? 2 : 0) | (a.moveMode === 'sprint' ? 4 : 0);
-      acts.push([a.id, rnd(a.x), rnd(a.z), r3(a.yaw), r3(a.pitch), rnd(a.vx), rnd(a.vz), fl, a.kills, a.deaths, rnd(a.y || 0)]);
+      full.set(a, [a.id, rnd(a.x), rnd(a.z), r3(a.yaw), r3(a.pitch), rnd(a.vx), rnd(a.vz), fl, a.kills, a.deaths, rnd(a.y || 0)]);
+      short.set(a, [a.id, a.alive ? 1 : 0, a.kills, a.deaths]);
     }
     let pk = 0;
     G.pickups.forEach((p, i) => { if (p.active) pk |= 1 << i; });
-    const base = { t: 's', cd: this.countdown > 0 ? Math.round(this.countdown * 10) / 10 : 0, tm: Math.round(R.time * 1000) / 1000, tl: isFinite(G.timeLeft) ? Math.round(G.timeLeft * 10) / 10 : -1, a: acts, pk, e: this.events };
+    const base = { t: 's', cd: this.countdown > 0 ? Math.round(this.countdown * 10) / 10 : 0, tm: Math.round(R.time * 1000) / 1000, tl: isFinite(G.timeLeft) ? Math.round(G.timeLeft * 10) / 10 : -1, pk };
     // every 2 s: each human's ping (as their browser last reported it), by actor id, for the scoreboard
     if (this.tick % (TICK_HZ * 2) === 1) {
       base.pg = {};
       for (const c of this.clients.values()) if (c.actor) base.pg[c.actor.id] = Math.round(c.rtt);
     }
-    // per-client 'me' block: private numbers the HUD needs
     for (const c of this.clients.values()) {
-      const a = c.actor;
-      const me = a ? { hp: Math.max(0, Math.round(a.health)), darts: a.wpn ? a.wpn.darts : 0, rt: a.alive ? 0 : rnd(a.respawnT || 0) } : null;
-      this.send(c, { ...base, me });
+      const v = c.actor;
+      const sees = (a) => a === v || (a.alive && c.seen && (c.seen.get(a.id) || 0) > now);
+      const acts = R.actors.map((a) => (sees(a) ? full.get(a) : short.get(a)));
+      const e = [];
+      for (const ev of this.events) {
+        if (ev.snd) { if (this.hears(v, ev)) e.push(ev.w); }
+        else if (ev.tgt) {
+          // damage: to the two people in it and anyone who can see the target; the victim also learns where the
+          // shot came from (the hurt arrow), which its gunshot gave away anyway
+          if (ev.tgt === v && ev.att) e.push([...ev.w, rnd(ev.att.x), rnd(ev.att.z)]);
+          else if (ev.att === v || sees(ev.tgt)) e.push(ev.w);
+        } else if (ev.sp) e.push(sees(ev.sp) ? ev.w : ['sp', ev.sp.id, null, null, null, ev.sp.spawnSeq]);
+        else e.push(ev.w);
+      }
+      // private numbers the HUD needs
+      const me = v ? { hp: Math.max(0, Math.round(v.health)), darts: v.wpn ? v.wpn.darts : 0, rt: v.alive ? 0 : rnd(v.respawnT || 0) } : null;
+      this.send(c, { ...base, a: acts, e, me });
     }
     this.events.length = 0; // same array: the bus handlers hold a reference to it
+  }
+
+  // where client c could see from this tick: its eye, where it's heading and a step either side (peeking), each kept
+  // only if the eye itself can see it (no looking out from inside a wall)
+  viewPoints(v) {
+    const W = this.sim.world, ey = (v.y || 0) + (v.alive ? this.sim.weapons.eyeY(v) : 0.45);
+    const eye = [v.x, ey, v.z], pts = [eye];
+    const rx = Math.cos(v.yaw || 0), rz = -Math.sin(v.yaw || 0); // weapons.right
+    const cand = [[v.x + rx * VIS_SIDE, v.z + rz * VIS_SIDE], [v.x - rx * VIS_SIDE, v.z - rz * VIS_SIDE]];
+    if (Math.hypot(v.vx || 0, v.vz || 0) > 0.3) cand.push([v.x + (v.vx || 0) * VIS_LEAD, v.z + (v.vz || 0) * VIS_LEAD]);
+    for (const [x, z] of cand) if (W.los(eye[0], ey, eye[2], x, ey, z)) pts.push([x, ey, z]);
+    return pts;
+  }
+  // refresh every client's sightings (c.seen: actor id -> ms until which it counts as seen)
+  updateVis(now) {
+    const R = this.sim, W = R.world;
+    for (const c of this.clients.values()) {
+      const v = c.actor;
+      if (!c.seen) c.seen = new Map();
+      if (!v || v.waiting) { c.seen.clear(); continue; } // not in play yet: nothing to see
+      let pts = null;
+      for (const a of R.actors) {
+        if (a === v || !a.alive) continue;
+        if ((c.seen.get(a.id) || 0) > now + VIS_HOLD / 2) continue; // seen a moment ago: still fresh
+        let ok = Math.hypot(a.x - v.x, a.z - v.z) < VIS_NEAR;
+        if (!ok) {
+          pts = pts || this.viewPoints(v);
+          const ay = a.y || 0, ty = [ay + 0.3, ay + (a.crouch ? 0.7 : 1.0), ay + R.weapons.eyeY(a) + 0.1];
+          for (const p of pts) { for (const y of ty) if (W.los(p[0], p[1], p[2], a.x, y, a.z)) { ok = true; break; } if (ok) break; }
+        }
+        if (ok) c.seen.set(a.id, now + VIS_HOLD);
+      }
+    }
+  }
+  // could client actor v hear (the audio's own cut-off) or see where this sound was made?
+  hears(v, ev) {
+    if (!v) return false;
+    const s = ev.snd;
+    if (ev.by === v) return true;
+    const ey = (v.y || 0) + (v.alive ? this.sim.weapons.eyeY(v) : 0.45);
+    const R = this.sim, gain = R.soundGain ? R.soundGain(s, v.x, v.z) : 1;
+    if (Math.hypot(s.x - v.x, (s.y || 0) - ey, s.z - v.z) <= (s.radius || 6) * gain * 1.15 + SND_MARGIN) return true;
+    return R.world.los(v.x, ey, v.z, s.x, Math.max(0.3, s.y || 0), s.z);
   }
 
   // ---- client inputs
@@ -756,6 +862,32 @@ export class Room extends DurableObject {
     else if (mm === 'crouch' && !a.crouch) mm = 'walk';
     else if (mm === 'idle' && spd > 1) mm = 'walk';
     a.moveMode = mm;
+    this.footsteps(a, moved);
+  }
+
+  // footsteps, made by the room from the movement it granted (player.js does the same for the local echo), so a
+  // modded client can't walk silently: one per stride on the ground, a step on take-off, a landing thump by fall speed
+  footsteps(a, moved) {
+    const W = this.sim.world, y = a.y || 0;
+    const air = y > W.groundAt(a, y) + 0.05;
+    const mult = () => this.sim.FLOOR_MULT[W.floorMatAt(a.x, a.z)] || 1;
+    const snd = (kind, m) => this.sim.sound(kind, a.x, y + 0.05, a.z, a, { mult: m });
+    if (air) {
+      if (!a._air && y > (a._lastY || 0) + 0.02) snd('step', mult()); // jumped (stepping off an edge is silent)
+      a._peakY = a._air ? Math.max(a._peakY || 0, y) : y;
+      a._stepAcc = Math.min(a._stepAcc == null ? 0.5 : a._stepAcc, 0.5);
+    } else if (a._air) {
+      const fall = Math.sqrt(2 * GRAV * Math.max(0, (a._peakY || y) - y));
+      snd('sprint', Math.min(2, mult() * (0.8 + fall * 0.06)));
+      a._stepAcc = 0;
+    } else if (a.moveMode === 'idle' || moved <= 0) {
+      a._stepAcc = Math.min(a._stepAcc == null ? 0.5 : a._stepAcc, 0.5);
+    } else {
+      const kind = a.moveMode === 'sprint' ? 'sprint' : a.moveMode === 'crouch' ? 'crouch' : 'step';
+      a._stepAcc = (a._stepAcc == null ? 0.5 : a._stepAcc) + moved / STRIDE[kind];
+      if (a._stepAcc >= 1) { a._stepAcc -= Math.floor(a._stepAcc); snd(kind, mult()); }
+    }
+    a._air = air; a._lastY = y;
   }
 
   onClientSound(c, m) {
@@ -823,6 +955,8 @@ export class Room extends DurableObject {
     if (this.pub) matcher(this.env).report(this.code, { humans: this.humanCount(), max: this.settings.maxPlayers, phase: this.phase }).catch(() => {});
   }
 }
+
+function ownPose(a) { return a ? [[a.id, rnd(a.x), rnd(a.z), rnd(a.yaw), a.spawnSeq || 0]] : []; }
 
 // match length on the wire: JSON has no Infinity, so an unlimited match travels as 0 (and timeLeft as -1)
 function wireTime(t) { return isFinite(t) ? t : 0; }

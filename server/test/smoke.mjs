@@ -11,7 +11,7 @@ let fails = 0;
 const ok = (cond, msg) => { console.log((cond ? 'ok   ' : 'FAIL ') + msg); if (!cond) fails++; };
 
 function client(code, name) {
-  const ws = new WebSocket(`${WS}/api/rooms/${code}/ws?name=${name}&uid=test-${name}&v=1`, { headers: { Origin: ORIGIN } });
+  const ws = new WebSocket(`${WS}/api/rooms/${code}/ws?name=${name}&v=2`, { headers: { Origin: ORIGIN } });
   const c = { ws, name, msgs: [], snaps: 0, events: [], last: null, start: null, lobby: null, over: null, you: 0, cid: 0 };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
@@ -77,15 +77,17 @@ ok(B.snaps - n0 > 20, 'snapshots streaming (' + (B.snaps - n0) + ' in 1 s)');
 
 const W = loadWorld(); W.props.build(W.maps[1]); // map 1, set above
 const pos = (c, id) => c.last.a.find((r) => r[0] === id);
-// B walks to A (3 m hops; good enough for a test, ignores walls) then knifes
+// B walks to A then knifes. B only gets A's position once A is in sight, so the walk uses A's own snapshot.
 let seq = 0;
 for (const e of B.events) if (e[0] === 'sp' && e[1] === B.you) seq = e[5];
 const sp0 = B.start.poses.find((p) => p[0] === B.you); if (sp0) seq = Math.max(seq, sp0[4]);
 let bx = pos(B, B.you)[1], bz = pos(B, B.you)[2];
-B.send({ t: 'snd', k: 'step', x: bx, y: 0.05, z: bz, m: 1 });
+B.send({ t: 'snd', k: 'step', x: bx, y: 0.05, z: bz, m: 1 }); // footsteps from the client are ignored now
+await sleep(200);
+ok(!B.events.some((e) => e[0] === 's' && e[1] === 'step' && e[5] === B.you), 'a footstep sent by the client is not relayed');
 let knifes = 0;
 for (let i = 0; i < 600 && !B.events.some((e) => e[0] === 'k'); i++) {
-  const a = pos(B, A.you);
+  const a = pos(A, A.you);
   const dx = a[1] - bx, dz = a[2] - bz, d = Math.hypot(dx, dz);
   if (d > 0.8) { const n = stepToward(W, bx, bz, a[1], a[2], 0.4); bx = n.x; bz = n.z; }
   const yaw = Math.atan2(-dx, -dz);
@@ -94,7 +96,10 @@ for (let i = 0; i < 600 && !B.events.some((e) => e[0] === 'k'); i++) {
   if (d < 1.2) { B.send({ t: 'act', a: 'knife', yaw, pitch: 0 }); knifes++; await sleep(650); }
 }
 const kill = B.events.find((e) => e[0] === 'k');
-ok(B.events.some((e) => e[0] === 's' && e[1] === 'step' && e[5] === B.you), 'client footstep relayed as a sound event');
+const FEET = new Set(['step', 'sprint', 'crouch']); // B hops 0.4 m per 60 ms: sprint speed
+ok(B.events.some((e) => e[0] === 's' && FEET.has(e[1]) && e[5] === B.you), 'the room made footsteps from B moving');
+ok(A.events.some((e) => e[0] === 's' && FEET.has(e[1]) && e[5] === B.you), 'A heard B coming');
+ok(pos(A, B.you).length === 11, 'A sees B up close (full row)');
 ok(B.events.some((e) => e[0] === 's' && e[1] === 'melee'), 'knife swing sound broadcast');
 ok(B.events.some((e) => e[0] === 'd' && e[1] === A.you && e[2] === B.you), 'damage event A <- B');
 ok(kill && kill[1] === A.you && kill[2] === B.you, 'kill event (after ' + knifes + ' knife swings)');

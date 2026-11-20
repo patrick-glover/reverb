@@ -54,7 +54,7 @@ for (let i = 0; i < 50 && !(N.active && N.players.length); i++) await sleep(50);
 ok(N.active && N.code && N.isHost(), 'hosted room ' + N.code + ' and is host');
 
 // ---- raw guest joins
-const ws = new WebSocket(`${BASE.replace(/^http/, 'ws')}/api/rooms/${N.code}/ws?name=Rook&uid=test-rook&v=1`, { headers: { Origin: 'http://localhost:8000' } });
+const ws = new WebSocket(`${BASE.replace(/^http/, 'ws')}/api/rooms/${N.code}/ws?name=Rook&v=2`, { headers: { Origin: 'http://localhost:8000' } });
 const g = { last: null, start: null, events: [] };
 ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.t === 'start') { g.start = m; ws.send(JSON.stringify({ t: 'ready' })); } if (m.t === 's') { g.last = m; g.events.push(...m.e); } };
 await new Promise((r) => (ws.onopen = r));
@@ -75,15 +75,21 @@ ok(P.alive && !P.netWaiting && G.state === 'playing', 'spawned after clicking in
 const rook = R.actors.find((a) => a !== P);
 ok(R.actors.length === 2 && rook && rook.name === 'Rook', 'actors: you + Rook proxy');
 
+// what the room sends this browser (other players' rows only arrive while they're in sight, so the checks below read
+// our own row and events from our own socket)
+const h = { last: null, events: [] };
+N.ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (m.t === 's') { h.last = m; h.events.push(...m.e); } });
+const myActorId = () => [...h.last.a].find((r) => r.length === 11 && r[0] !== g.start.you)[0];
+
 // ---- walk: hold W for 1 s, server should see us move
 const p0 = { x: P.x, z: P.z };
 key('KeyW', true); await sleep(1000); key('KeyW', false);
 await sleep(300);
 const moved = Math.hypot(P.x - p0.x, P.z - p0.z);
-const myRow = g.last.a.find((r) => r[0] === g.start.you ? false : true && r[0] !== g.start.you);
+const myRow = h.last.a.find((r) => r[0] === myActorId());
 ok(moved > 1, 'local player walked ' + moved.toFixed(2) + ' m');
 ok(myRow && Math.hypot(myRow[1] - P.x, myRow[2] - P.z) < 0.5, 'room has our position (' + (myRow && myRow.slice(1, 3)) + ')');
-ok(g.events.some((e) => e[0] === 's' && (e[1] === 'step' || e[1] === 'sprint') && e[5] !== g.start.you), 'our footsteps reached the guest');
+ok(h.events.some((e) => e[0] === 's' && (e[1] === 'step' || e[1] === 'sprint') && e[5] === myActorId()), 'the room made our footsteps from our movement');
 
 // ---- fire once: predicted locally, gunshot reaches the guest
 const ammo0 = P.wpn.ammo;
@@ -91,7 +97,7 @@ R.input.mouse.down[0] = false; await sleep(50);
 R.input.mouse.down[0] = true; await sleep(80); R.input.mouse.down[0] = false;
 await sleep(300);
 ok(P.wpn.ammo === ammo0 - 1, 'ammo predicted locally (' + ammo0 + ' -> ' + P.wpn.ammo + ')');
-ok(g.events.some((e) => e[0] === 's' && e[1] === 'gunshot'), 'gunshot broadcast by the room');
+ok(h.events.some((e) => e[0] === 's' && e[1] === 'gunshot' && e[5] === myActorId()), 'the room resolved our gunshot');
 
 // ---- guest moves: proxy follows (interpolated)
 const rookId = g.start.you;
@@ -99,20 +105,19 @@ let rx = g.last.a.find((r) => r[0] === rookId)[1], rz = g.last.a.find((r) => r[0
 const sq = (g.events.filter((e) => e[0] === 'sp' && e[1] === rookId).pop() || [])[5] || 0;
 for (let i = 0; i < 8; i++) { ws.send(JSON.stringify({ t: 'st', x: rx, z: rz, yaw: 0, pitch: 0, vx: 0, vz: 0, cr: 0, mm: 0, sq })); await sleep(40); }
 await sleep(300);
-ok(Math.hypot(rook.x - rx, rook.z - rz) < 0.3, 'proxy sits where the guest is');
 
 // ---- guest walks over and knifes us
 const kills = () => G.killFeed.length;
 for (let i = 0; i < 600 && P.alive; i++) {
-  const me = g.last.a.find((r) => r[0] !== rookId);
-  const dx = me[1] - rx, dz = me[2] - rz, d = Math.hypot(dx, dz);
-  if (d > 0.8) { const n = stepToward(R, rx, rz, me[1], me[2], 0.4); rx = n.x; rz = n.z; }
+  const dx = P.x - rx, dz = P.z - rz, d = Math.hypot(dx, dz);
+  if (d > 0.8) { const n = stepToward(R, rx, rz, P.x, P.z, 0.4); rx = n.x; rz = n.z; }
   const yaw = Math.atan2(-dx, -dz);
   ws.send(JSON.stringify({ t: 'st', x: rx, z: rz, yaw, pitch: 0, vx: 0, vz: 0, cr: 0, mm: 0, sq }));
   await sleep(60);
   if (d < 1.2) { ws.send(JSON.stringify({ t: 'act', a: 'knife', yaw, pitch: 0 })); await sleep(650); }
 }
 ok(!P.alive && G.state === 'dead', 'we died (state ' + G.state + ')');
+ok(rook.alive && Math.hypot(rook.x - rx, rook.z - rz) < 0.5, 'up close, the proxy sits where the guest is');
 ok(kills() === 1 && G.killFeed[0].killer === rook, 'kill feed: Rook killed us');
 ok(G.lastDeath && G.lastDeath.weapon === 'knife', 'death screen knows it was a knife');
 ok(rook.kills === 1 && P.deaths === 1, 'scores from snapshots (Rook ' + rook.kills + ', our deaths ' + P.deaths + ')');

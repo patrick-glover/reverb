@@ -2,7 +2,7 @@
 const BASE = process.argv[2] || 'http://localhost:8787', O = { headers: { Origin: 'http://localhost:8000' } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fails = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) fails++; };
-const cl = (code, name) => { const ws = new WebSocket(`${BASE.replace(/^http/, 'ws')}/api/rooms/${code}/ws?name=${name}&uid=t-${name}&v=1`, O);
+const cl = (code, name) => { const ws = new WebSocket(`${BASE.replace(/^http/, 'ws')}/api/rooms/${code}/ws?name=${name}&v=2`, O);
   const c = { ws, over: null, lobby: null, closed: null, send: (o) => ws.send(JSON.stringify(o)) };
   ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.t === 'over') c.over = m; if (m.t === 'lobby') c.lobby = m; };
   ws.onclose = (e) => (c.closed = { code: e.code, reason: e.reason });

@@ -2,7 +2,7 @@
 const BASE = process.argv[2] || 'http://localhost:8787', WS = BASE.replace(/^http/, 'ws'), O = { headers: { Origin: 'http://localhost:8000' } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fails = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) fails++; };
-const cl = (code, name) => { const ws = new WebSocket(`${WS}/api/rooms/${code}/ws?name=${name}&uid=t-${name}&v=1`, O);
+const cl = (code, name) => { const ws = new WebSocket(`${WS}/api/rooms/${code}/ws?name=${name}&v=2`, O);
   const c = { ws, roster: null, start: null, over: null, lobby: null, send: (o) => ws.send(JSON.stringify(o)) };
   ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.t === 'start') { c.start = m; c.roster = m.actors; } if (m.t === 'roster') c.roster = m.actors; if (m.t === 'over') c.over = m; if (m.t === 'lobby') c.lobby = m; if (m.t === 's') c.last = m; };
   c.open = new Promise((r) => (ws.onopen = r)); return c; };
@@ -25,7 +25,7 @@ ok(A.roster.length === 4 && bots(A) === 1, 'a leaver is replaced by a bot');
 // let bots play a bit; make sure the room keeps ticking with bots shooting humans who stand still
 await sleep(4000);
 ok(A.last && A.last.a.length === 4, 'snapshots still flowing with bots');
-console.log('     scores:', A.last.a.map((r) => r[8] + '/' + r[9]).join(' '));
+console.log('     scores:', A.last.a.map((r) => (r.length < 11 ? r[2] + '/' + r[3] : r[8] + '/' + r[9])).join(' '));
 for (const c of [A, B, C]) { c.send({ t: 'bye' }); c.ws.close(); }
 await sleep(300);
 console.log(fails ? fails + ' FAILED' : 'all passed'); process.exit(fails ? 1 : 0);

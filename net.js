@@ -8,7 +8,7 @@
   'use strict';
   const R = (window.R = window.R || {});
 
-  const PROTOCOL = 1;
+  const PROTOCOL = 2;
   // the room server (server/, a Cloudflare Worker); localhost and file:// use the local dev server instead
   const PROD_SERVER = 'https://api.playreverb.com';
   const SEND_HZ = 20;
@@ -18,8 +18,8 @@
   const MOVE_MODES = ['idle', 'walk', 'sprint', 'crouch'];
   // own sounds this browser already made itself (the room's copy is skipped)
   const SELF_PREDICTED = new Set(['step', 'sprint', 'crouch', 'click', 'gunshot', 'reload', 'melee', 'dartThrow']);
-  // own sounds the room can't know about unless we tell it
-  const FORWARD = new Set(['step', 'sprint', 'crouch', 'click']);
+  // own sounds the room can't know about unless we tell it (footsteps it makes itself from our movement)
+  const FORWARD = new Set(['click']);
 
   const PALETTE = R.PALETTE; // core.js: the 8 colours players pick from (bots get the rest)
   const now = () => performance.now();
@@ -74,11 +74,8 @@
   let mode = 'menu';          // overlay screen: host | join | lobby | msg
   let el = null;
 
-  function uid() {
-    let u = lsGet('reverb.uid');
-    if (!u) { u = Math.random().toString(36).slice(2) + Date.now().toString(36); lsSet('reverb.uid', u); }
-    return u;
-  }
+  // signed player id the server issued in a welcome ('<id>.<sig>'); sent back on every connect
+  const playerToken = () => { const t = lsGet('reverb.pid'); return t && /^[0-9a-f]{32}\.[\w-]+$/.test(t) ? t : ''; };
   const myName = () => lsGet('reverb.name') || '';
   // chosen colour, saved in this browser; also tints your own dart pings offline
   const myColor = () => { const c = lsGet('reverb.color'); return PALETTE.includes(c) ? c : PALETTE[0]; };
@@ -237,7 +234,7 @@
     closeWs();
     N._connName = name;
     const url = serverBase().replace(/^http/, 'ws') + '/api/rooms/' + code + '/ws?v=' + PROTOCOL +
-      '&name=' + encodeURIComponent(name) + '&uid=' + encodeURIComponent(uid()) + '&color=' + encodeURIComponent(myColor()) +
+      '&name=' + encodeURIComponent(name) + '&pt=' + encodeURIComponent(playerToken()) + '&color=' + encodeURIComponent(myColor()) +
       (rk ? '&rk=' + encodeURIComponent(rk) : '');
     let ws;
     try { ws = new WebSocket(url); } catch (e) { return fail('could not connect'); }
@@ -335,6 +332,7 @@
         N._quickConnecting = false;
         rejoinUntil = 0;
         if (m.rk) { ticket = { code: m.code, rk: m.rk, name: N._connName || myName() || 'Player' }; ticketSet(ticket); }
+        if (m.pt) lsSet('reverb.pid', m.pt); // a new (or re-issued) player id
         try { history.replaceState(null, '', location.pathname + '?room=' + m.code); } catch (e) { /* ignore */ }
         break;
       case 'lobby':
@@ -419,14 +417,23 @@
     for (const row of m.a) {
       const a = byId.get(row[0]);
       if (!a) continue;
-      a.kills = row[8]; a.deaths = row[9];
       if (m.pg) a.ping = m.pg[row[0]] || 0;
+      if (row.length < 11) {
+        // out of sight: the room only says whether they're alive. They're nowhere as far as echoes and bodies go
+        // (alive = false), while netAlive keeps the scoreboard honest.
+        a.kills = row[2]; a.deaths = row[3];
+        if (a !== P) { a.netAlive = !!(row[1] & 1); a.alive = false; a.netHidden = true; a.buf = []; }
+        continue;
+      }
+      a.kills = row[8]; a.deaths = row[9];
       if (a === P) continue;
       const fl = row[7];
       a.buf.push({ t: m.tm, x: row[1], y: row[10] || 0, z: row[2], yaw: row[3], pitch: row[4], vx: row[5], vz: row[6] });
       if (a.buf.length > 30) a.buf.shift();
       const alive = !!(fl & 1);
-      if (alive && !a.alive) { a.x = row[1]; a.z = row[2]; a.buf = [a.buf[a.buf.length - 1]]; }
+      // back in sight (or alive again): snap to where they are instead of sliding from where we last saw them
+      if (alive && (!a.alive || a.netHidden)) { a.x = row[1]; a.z = row[2]; a.buf = [a.buf[a.buf.length - 1]]; }
+      a.netHidden = false; a.netAlive = alive;
       a.alive = alive;
       a.crouch = !!(fl & 2);
       a.moveMode = fl & 4 ? 'sprint' : a.crouch ? 'crouch' : Math.hypot(row[5], row[6]) > 0.25 ? 'walk' : 'idle';
@@ -459,7 +466,9 @@
         if (t === P) {
           P.health = Math.max(0, P.health - amount);
           P.hurtT = 1.0;
-          if (a) { P.hurtX = a.x; P.hurtZ = a.z; P.hurtDir = W.relAngle(P, a.x, a.z); }
+          // the room adds where the shooter stood (they may be out of sight, so their proxy isn't there)
+          const hx = e[8] != null ? e[8] : a && a.x, hz = e[9] != null ? e[9] : a && a.z;
+          if (hx != null) { P.hurtX = hx; P.hurtZ = hz; P.hurtDir = W.relAngle(P, hx, hz); }
         }
         if (a === P && t !== P) { P.hitMarkerT = 0.25; if (G.stats) G.stats.hits++; }
         R.bus.emit('damage', { target: t, attacker: a, amount, part, x, y, z });
@@ -469,7 +478,7 @@
         const [, vid, kid, weapon, hs] = e;
         const v = get(vid), k = get(kid);
         if (!v) return;
-        v.alive = false;
+        v.alive = false; v.netAlive = false;
         if (v === P) { P.health = 0; P.respawnT = 3; P.killer = k; }
         if (k === P && v !== P) P.killMarkerT = 0.6;
         R.bus.emit('kill', { victim: v, killer: k, weapon, headshot: !!hs });
@@ -479,7 +488,9 @@
         const [, id, x, z, yaw, seq] = e;
         const a = get(id);
         if (!a) return;
-        if (a === P) { P.respawn(x, z, yaw); P.spawnSeq = seq; P.netWaiting = false; } else placeProxy(a, x, z, yaw);
+        if (a === P) { P.respawn(x, z, yaw); P.spawnSeq = seq; P.netWaiting = false; }
+        else if (x == null) { a.netAlive = true; a.alive = false; a.netHidden = true; a.buf = []; } // spawned out of sight
+        else { placeProxy(a, x, z, yaw); a.netHidden = false; a.netAlive = true; }
         return;
       }
     }

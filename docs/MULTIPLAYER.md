@@ -43,9 +43,19 @@ More detail in [Monitoring](#monitoring) and [Costs and scaling](#costs-and-scal
   capped at 6 m so a stalled connection catches up), sweeps the move in 0.1 m steps so a claim can't cross a wall,
   and works out sprint and crouch from the speed it granted. Height is capped at a jump above what you stand on, and
   after 1.5 s in the air the room puts you back on the ground (still counted as airborne for spread).
-- **Forwarded sounds are checked.** Steps and clicks come from the browser, so the room rate-limits them per kind
-  (a click per 0.5 s, steps in bursts of 3 at 0.25 s), keeps them within 1 m of the sender, clamps their loudness to
-  the floor-material range, and drops clicks without a direction.
+- **The room makes footsteps.** From the movement it granted: one per stride (the `player.js` rule: walk, sprint or
+  crouch by the speed it granted), a step on take-off and a landing thump by fall height, at the floor's loudness. The
+  browser still plays its own steps at once; it just doesn't send them, so a modded client can't walk silently. Only
+  clicks are forwarded: one per 0.5 s, within 1 m of the sender, with a direction.
+- **You only get what you could see or hear.** Each client gets its own snapshot. Another actor's position (full row)
+  only comes while you could see them: line of sight from your eye, from 0.25 s ahead along your velocity, or from
+  0.5 m either side (peeking), to their feet, chest or head, or within 2.5 m; a sighting holds 0.6 s. Otherwise the
+  row is `[id flags kills deaths]` and the browser treats them as absent (no echoes, no body; the scoreboard still
+  shows them alive). Sounds come only if you could hear them (the audio's own cut-off: radius x directivity x 1.15,
+  plus 2.5 m) or see where they were made; damage only if you're in it or can see the target (the victim also gets
+  the shooter's position for the hurt arrow); a spawn out of sight comes without coordinates; `start` carries only
+  your own pose. A sound behind a wall you can't hear is dropped even if its glow would have spilled onto a wall you
+  can see. This costs about 0.5 µs per sight line: well under 1 ms a tick for a full room.
 - **Actions are predicted, then resolved by the room.** Fire, knife, dart and reload play their sound and spend
   ammo/cooldown locally at once; the room raycasts and deals damage with its own positions. The room times each
   player's actions on its own clock: one may arrive a little early (60 ms for fire, 150 ms knife/dart, 300 ms for a
@@ -98,12 +108,12 @@ and clicks back in. A second socket with the same key takes the seat over and th
 Leave, Cancel and the host's Close send `bye`, so their seats are freed at once. Closes the room sends itself
 (4000+) are never retried.
 
-### Protocol (JSON, version 1)
+### Protocol (JSON, version 2)
 
 | up (browser → room) | |
 |---|---|
 | `st` | `x z yaw pitch vx vz cr mm sq` own movement; `sq` = spawn sequence (stale packets from before a respawn are dropped) |
-| `snd` | `k x y z m d` own step/sprint/crouch/click |
+| `snd` | `k x y z m d` own click (`k: click`; footsteps are the room's) |
 | `act` | `a: fire\|knife\|dart\|reload`, `yaw pitch cr` |
 | `ready` | clicked into the match; spawn me |
 | `bye` | leaving on purpose: free my seat when the socket closes (otherwise it is held 30 s) |
@@ -112,12 +122,12 @@ Leave, Cancel and the host's Close send `bye`, so their seats are freed at once.
 
 | down (room → browser) | |
 |---|---|
-| `welcome` | `cid code protocol rk` (rejoin key) `rejoin` (true when an existing seat was taken back) |
+| `welcome` | `cid code protocol rk` (rejoin key) `rejoin` (true when an existing seat was taken back) `pt` (a new signed player id, when yours was missing or bad: keep it in `localStorage` and send it as `?pt=` on every connect) |
 | `lobby` | `phase host settings quick players[]` (`cid name color rtt away`); `quick` = a public room (host is 0) |
-| `start` | `map actors[] you poses[] killLimit matchTime` |
+| `start` | `map actors[] you poses[] killLimit matchTime`; `poses` has only your own |
 | `roster` | `actors[]` after joins/leaves/bot swaps |
-| `s` (30 Hz) | `tm tl a[] pk e[] me`: actor rows `[id x z yaw pitch vx vz flags kills deaths]`, pickup bits, events, private hp/darts/respawn |
-| events in `s.e` | `['s',kind,x,y,z,actor,mult,dir]` sound, `['d',…]` damage, `['k',victim,killer,weapon,hs]` kill, `['sp',id,x,z,yaw,seq]` spawn, `['p',…]` pickup (not read by the browser: pickup state travels in `pk`) |
+| `s` (30 Hz) | `tm tl a[] pk e[] me`, per client: actor rows `[id x z yaw pitch vx vz flags kills deaths y]` for actors you can see (and yourself), `[id flags kills deaths]` for the rest; pickup bits, events, private hp/darts/respawn |
+| events in `s.e` | `['s',kind,x,y,z,actor,mult,dir]` sound, `['d',target,attacker,amount,part,x,y,z(,ax,az)]` damage (`ax az` = shooter, to the victim only), `['k',victim,killer,weapon,hs]` kill, `['sp',id,x,z,yaw,seq]` spawn (`x z yaw` null when out of sight). Only the ones you could hear or see (see How a match works) |
 | `over` | `ranking winner` |
 | `pong`, `error` | `c` echoed for the RTT; `msg` shown in the overlay |
 
@@ -146,6 +156,7 @@ node test/fill.mjs     # bot fill, mid-match join/leave, full room
 node test/over.mjs     # match end and the return to the lobby (7 hard bots, kill limit 2)
 node test/host.mjs     # host ends the match, host closes the room
 node test/rejoin.mjs   # seat held 30 s after a drop: same cid, actor, score and host role; bye frees it (~35 s)
+node test/vis.mjs      # anti-wallhack: no position through a wall, a position in sight; signed player ids
 node test/quick.mjs    # quick play: straight into a match, no host, matched into the same room, full rooms skipped
                        # (run on a fresh dev server: leftover quick rooms get matched into)
 ```
@@ -153,7 +164,9 @@ node test/quick.mjs    # quick play: straight into a match, no host, matched int
 ## Deploy
 
 1. `cd server && npx wrangler login` (once).
-2. `npx wrangler secret put ADMIN_TOKEN` (any long random string; it unlocks `/admin`).
+2. `npx wrangler secret put ADMIN_TOKEN` (any long random string; it unlocks `/admin`), and
+   `npx wrangler secret put PLAYER_ID_SECRET` (another; it signs player ids. Changing it gives everyone a new id.
+   Without it nothing verifies and every connection counts as a new player). Locally both go in `server/.dev.vars`.
 3. `npm run deploy`. Live at `https://api.playreverb.com` (console: `/admin`; the token is in `server/.admin-token`, not in git).
 4. `PROD_SERVER` at the top of `net.js` is the server's URL; the custom domain is in `routes` in `wrangler.jsonc`
    (keep `workers_dev: false`).
@@ -170,7 +183,7 @@ Deploying a new Worker version restarts every room, so live matches disconnect. 
 
 ## Monitoring
 
-- **`/admin`** on the Worker: playing now, live rooms and bots, unique players (anonymous random id per browser),
+- **`/admin`** on the Worker: playing now, live rooms and bots, unique players (signed random id per browser),
   sessions, hours played, matches, peak concurrency, 48 h concurrency and room charts (1-minute samples), per-day
   table, live room list, last 100 events. Refreshes every 10 s.
 - **Logs**: every room event is one JSON line (`{"evt":"match_started","room":"XVTZ",…}`). `npm run tail` streams them;
@@ -227,10 +240,11 @@ saving at scale (see `ROADMAP.md`).
 5. **One matcher for the world.** Quick play goes through a single `Matcher` object and ignores distance. Past a
    few hundred public rooms, or with players on several continents, split it per region (pick by `request.cf.continent`).
 6. **Cheating.** Hits, damage, ammo, respawns and pickups are the room's; movement is held to a 7.5 m/s budget and
-   forwarded sounds are rate-limited. Two holes remain. Every snapshot carries every actor's exact position, so a
-   wallhack is reading `R.actors` in the console (fix: only send an actor while it is near a recent sound). And
-   footsteps come from the client, so a modded client can walk silently (fix: the room generates footsteps from
-   movement; the stride logic is in `player.js`).
+   swept against walls; actions are paced on the room's clock; footsteps are the room's; a client only gets the
+   positions and sounds it could see or hear. What's left: aim (the client says where it looks, so an aimbot works on
+   anyone in sight), sound positions (a sound you can hear arrives with exact coordinates, so a cheat can plot steps
+   precisely instead of by ear), and a client still learns about someone in sight but in the dark (unlit by any
+   sound): it needs them to paint its own clicks' echoes the moment it clicks.
 
 ### What doesn't need to change
 

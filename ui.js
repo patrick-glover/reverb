@@ -669,7 +669,7 @@
     rank.forEach((a, i) => {
       const me = a === R.player;
       if (me) { ctx.globalAlpha = 0.08 * alpha; ctx.fillStyle = C.cyan; ctx.fillRect(x0 - 6, y - lh / 2, w + 12, lh); }
-      const da = (a.alive ? 1 : 0.5) * alpha;
+      const da = ((a.netAlive != null ? a.netAlive : a.alive) ? 1 : 0.5) * alpha; // online, out-of-sight players are alive but not 'alive' locally
       text(ctx, String(i + 1), x0 + 6, y, 11, C.dim, 'left', alpha);
       ctx.fillStyle = colorOf(a); ctx.globalAlpha = da; dot(ctx, x0 + 22, y, 2.5);
       text(ctx, me ? (a.name && String(a.name).toUpperCase() !== 'YOU' ? String(a.name).toUpperCase() + ' (YOU)' : 'YOU') : nameOf(a), x0 + 30, y, 12, colorOf(a), 'left', da, 1);

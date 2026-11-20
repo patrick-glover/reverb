@@ -30,9 +30,9 @@ so the bill follows room-hours, not players.
 5. **Quick play: regions.** Quick play is in (0.7.0-dev): one global matcher hands out public rooms with free slots.
    Next is a matcher per region so strangers get a nearby room. Fuller rooms are also the biggest cost lever: from 1
    to 6 humans per room, the cost per player-hour drops from $0.0071 to $0.0016.
-6. **Interest management** (audit S5): only send an actor while it is near a recent sound. Today every snapshot
-   carries every position, so a wallhack is reading the console.
-7. **The room generates footsteps from movement**, closing the silent-walk cheat.
+6. ~~Interest management~~ and ~~room-made footsteps~~: done in 0.8.0-dev (positions by line of sight, sounds by
+   hearing range or sight). Next on that front: aim checks (an aimbot still works on anyone in sight).
+7. **Rooms survive a server deploy**: keep seats and scores in Durable Object storage, so the rejoin loop restores them.
 8. **Host kick or lock room; 5-character room codes.**
 9. **Analytics Engine for stats** and sharded live-room tracking, past ~2,000 live rooms.
 10. Bot brain experiments: an external decision model as a slow "commander" over the utility brain (not per tick).

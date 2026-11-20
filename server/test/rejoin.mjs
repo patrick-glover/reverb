@@ -4,7 +4,7 @@ const BASE = 'http://localhost:8787', WS = 'ws://localhost:8787';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fails = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) fails++; };
 function cl(code, name, rk) {
-  const ws = new WebSocket(`${WS}/api/rooms/${code}/ws?name=${name}&uid=x-${name}&v=1${rk ? '&rk=' + rk : ''}`, { headers: { Origin: 'http://localhost:8000' } });
+  const ws = new WebSocket(`${WS}/api/rooms/${code}/ws?name=${name}&v=2${rk ? '&rk=' + rk : ''}`, { headers: { Origin: 'http://localhost:8000' } });
   const c = { ws, welcome: null, lobby: null, start: null, closed: null, snaps: 0, send: (o) => ws.send(JSON.stringify(o)) };
   ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.t === 'welcome') c.welcome = m; if (m.t === 'lobby') c.lobby = m; if (m.t === 'start') c.start = m; if (m.t === 's') { c.snaps++; c.last = m; } };
   ws.onclose = (e) => (c.closed = { code: e.code, reason: e.reason });

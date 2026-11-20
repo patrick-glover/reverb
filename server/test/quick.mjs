@@ -4,7 +4,7 @@ const BASE = process.argv[2] || 'http://localhost:8787', WS = BASE.replace(/^htt
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fails = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) fails++; };
 const quick = async () => (await (await fetch(BASE + '/api/quick', { method: 'POST', ...O })).json()).code;
-const cl = (code, name) => { const ws = new WebSocket(`${WS}/api/rooms/${code}/ws?name=${name}&uid=q-${name}&v=1`, O);
+const cl = (code, name) => { const ws = new WebSocket(`${WS}/api/rooms/${code}/ws?name=${name}&v=2`, O);
   const c = { ws, roster: null, start: null, starts: 0, over: null, lobby: null, closed: null, send: (o) => ws.send(JSON.stringify(o)) };
   ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.t === 'start') { c.start = m; c.starts++; c.roster = m.actors; } if (m.t === 'roster') c.roster = m.actors; if (m.t === 'over') c.over = m; if (m.t === 'lobby') c.lobby = m; };
   ws.onclose = (e) => { c.closed = e; };
